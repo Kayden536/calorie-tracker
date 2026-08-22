@@ -213,42 +213,86 @@ const PulsePlateApp = (() => {
   async function renderFoodLogger() {
     renderCalendar();
     const search = $('[data-food-search]');
-    if (!search) return;
+    const list = $('[data-food-database-list]');
+    if (!search || !list) return;
+
     const run = async () => {
       const q = search.value.trim();
-      const list = $('[data-food-database-list]');
-      if (q.length < 2) { list.innerHTML = '<p class="page-copy">Type at least two characters to search USDA FoodData Central.</p>'; return; }
-      list.innerHTML = '<p class="page-copy">Searching…</p>';
+      if (q.length < 2) {
+        list.innerHTML = '<p class="page-copy">Type at least two characters to search USDA FoodData Central.</p>';
+        return;
+      }
+
+      list.innerHTML = '<p class="page-copy">Searching USDA FoodData Central…</p>';
+
       try {
         const response = await fetch(`/api/foods/search?q=${encodeURIComponent(q)}`);
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Food search failed.');
-        list.innerHTML = data.foods.length ? data.foods.map(foodCard).join('') : '<p class="page-copy">No matching foods found.</p>';
-        $$('.food-db-card').forEach(card => card.addEventListener('click', () => selectFood(data.foods.find(f=>String(f.id)===card.dataset.id))));
-      } catch (error) { list.innerHTML = `<p class="page-copy">${escapeHtml(error.message)}</p>`; }
+
+        const foods = Array.isArray(data.foods) ? data.foods : [];
+        list.innerHTML = foods.length
+          ? `<p class="food-search-count">Showing ${foods.length} result${foods.length === 1 ? '' : 's'}${data.totalHits ? ` of ${Number(data.totalHits).toLocaleString()}` : ''}.</p>${foods.map(foodCard).join('')}`
+          : '<p class="page-copy">No matching foods found.</p>';
+
+        $$('.food-db-card').forEach(card => {
+          card.addEventListener('click', () => {
+            const food = foods.find(f => String(f.id) === card.dataset.id);
+            if (food) selectFood(food);
+          });
+        });
+      } catch (error) {
+        console.error(error);
+        list.innerHTML = `<p class="page-copy">${escapeHtml(error.message)}</p>`;
+      }
     };
-    search.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer=setTimeout(run,350); });
+
+    search.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(run, 350);
+    });
+
+    $('[data-manual-toggle]')?.addEventListener('click', () => {
+      selectedFood = null;
+      $$('.food-db-card').forEach(card => card.classList.remove('selected'));
+      $('[data-form-mode-note]').textContent = 'Manual entry mode. Enter the food and nutrition values yourself.';
+      $('[data-food-name]')?.focus();
+    });
+
     $('[data-save-food]')?.addEventListener('click', saveFood);
-    if (search.value) run();
     await renderSelectedDateEntries();
   }
 
   function foodCard(food) {
-    const n=food.nutrients||{};
-    return `<button type="button" class="food-db-card" data-id="${food.id}"><strong>${escapeHtml(food.name)}</strong><p>${escapeHtml(food.brand || food.dataType || 'USDA FoodData Central')}</p><div class="macro-row"><span>${moneyless(n.calories)} cal</span><span>${moneyless(n.protein)}g protein</span><span>${moneyless(n.carbs)}g carbs</span><span>${moneyless(n.fat)}g fat</span></div></button>`;
+    const n = food.nutrients || {};
+    const serving = food.servingSize ? `${moneyless(food.servingSize)}${food.servingUnit ? ` ${escapeHtml(food.servingUnit)}` : ''}` : '100 g';
+    const brand = food.brand ? escapeHtml(food.brand) : escapeHtml(food.dataType || 'USDA FoodData Central');
+    return `<button type="button" class="food-db-card" data-id="${food.id}">
+      <strong>${escapeHtml(food.name)}</strong>
+      <p>${brand} · ${serving}</p>
+      <div class="macro-row">
+        <span>${moneyless(n.calories)} cal</span>
+        <span>${moneyless(n.protein)}g protein</span>
+        <span>${moneyless(n.carbs)}g carbs</span>
+        <span>${moneyless(n.fat)}g fat</span>
+      </div>
+    </button>`;
   }
 
   function selectFood(food) {
-    selectedFood=food;
-    $$('.food-db-card').forEach(c=>c.classList.toggle('selected', c.dataset.id===String(food.id)));
-    $('[data-food-name]').value=food.name;
-    $('[data-serving-name]').value=food.servingSize ? `${food.servingSize}${food.servingUnit?' '+food.servingUnit:''}` : '100 g';
-    const n=food.nutrients||{};
-    $('[data-calories-input]').value=moneyless(n.calories);
-    $('[data-protein-input]').value=moneyless(n.protein);
-    $('[data-carbs-input]').value=moneyless(n.carbs);
-    $('[data-fat-input]').value=moneyless(n.fat);
-    $('[data-form-mode-note]').textContent='USDA food selected. Nutrition values will be saved with this diary entry.';
+    selectedFood = food;
+    $$('.food-db-card').forEach(card => card.classList.toggle('selected', card.dataset.id === String(food.id)));
+    $('[data-food-name]').value = food.name;
+    $('[data-serving-name]').value = food.servingSize
+      ? `${moneyless(food.servingSize)}${food.servingUnit ? ` ${food.servingUnit}` : ''}`
+      : (food.householdServing || '100 g');
+
+    const n = food.nutrients || {};
+    $('[data-calories-input]').value = moneyless(n.calories);
+    $('[data-protein-input]').value = moneyless(n.protein);
+    $('[data-carbs-input]').value = moneyless(n.carbs);
+    $('[data-fat-input]').value = moneyless(n.fat);
+    $('[data-form-mode-note]').textContent = 'USDA food selected. Nutrition values will be saved with this diary entry.';
   }
 
   async function saveFood() {

@@ -1176,3 +1176,10 @@ a.date-button {
   .social-card-actions { justify-content:stretch; }
   .social-card-actions button { width:100%; }
 }
+
+
+.food-search-count {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
