@@ -1,0 +1,16 @@
+{
+  "name": "pulseplate-alpha",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PulsePlate alpha web application",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "@supabase/supabase-js": "^2.57.0"
+  }
+}

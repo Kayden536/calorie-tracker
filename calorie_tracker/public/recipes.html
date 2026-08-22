@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PulsePlate Recipes</title>
+    <link rel="stylesheet" href="css/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="js/supabase-client.js" defer></script>
+    <script src="js/app.js" defer></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar" aria-label="Primary navigation">
+        <a class="brand" href="index.html"><span class="brand-mark">P</span><span><strong>PulsePlate</strong><small>Nutrition planner · Alpha</small></span></a>
+        <nav class="nav-list">
+          <a class="nav-item" href="index.html"><span>H</span>Dashboard</a><a class="nav-item" href="log_food.html"><span>+</span>Log food</a><a class="nav-item" href="progress.html"><span>O</span>Progress</a><a class="nav-item active" href="recipes.html"><span>=</span>Recipes</a><a class="nav-item" href="social.html"><span>@</span>Friends</a>
+          <a class="nav-item" href="account.html"><span>A</span>Account</a>
+          <a class="nav-item" href="goals.html"><span>*</span>Goals</a>
+        </nav>
+      </aside>
+      <section class="workspace">
+        <header class="topbar"><div><p class="eyebrow">Saved foods</p><h1>Recipes</h1><p class="page-copy">Recipe library preview. Saving recipes is coming in the next alpha milestone.</p></div><a class="primary-button" href="log_food.html">Create recipe</a></header>
+        <section class="page-grid">
+          <article class="recipe-card"><h2>Blueberry protein oats</h2><p>430 cal | 32g protein | breakfast</p><div class="choice-row"><span>High protein</span><span>Fast</span></div></article>
+          <article class="recipe-card red"><h2>Chicken power bowl</h2><p>610 cal | 46g protein | lunch</p><div class="choice-row"><span>Meal prep</span><span>Balanced</span></div></article>
+          <article class="recipe-card gold"><h2>Turkey avocado wrap</h2><p>390 cal | 28g protein | lunch</p><div class="choice-row"><span>Recent</span><span>Portable</span></div></article>
+          <article class="recipe-card"><h2>Salmon rice plate</h2><p>640 cal | 42g protein | dinner</p><div class="choice-row"><span>Dinner</span><span>Omega fats</span></div></article>
+        </section>
+      </section>
+      <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><a href="account.html"><span>A</span>Account</a></nav>
+    </main>
+  </body>
+</html>
+
+
+
