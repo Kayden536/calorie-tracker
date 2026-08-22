@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PulsePlate Progress</title>
+    <link rel="stylesheet" href="css/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="js/supabase-client.js" defer></script>
+    <script src="js/app.js" defer></script>
+  </head>
+  <body data-page="progress">
+    <main class="app-shell">
+      <aside class="sidebar" aria-label="Primary navigation">
+        <a class="brand" href="index.html"><span class="brand-mark">P</span><span><strong>PulsePlate</strong><small>Nutrition planner · Alpha</small></span></a>
+        <nav class="nav-list">
+          <a class="nav-item" href="index.html"><span>H</span>Dashboard</a>
+          <a class="nav-item" href="log_food.html"><span>+</span>Log food</a>
+          <a class="nav-item active" href="progress.html"><span>O</span>Progress</a>
+          <a class="nav-item" href="recipes.html"><span>=</span>Recipes</a>
+          <a class="nav-item" href="social.html"><span>@</span>Friends</a>
+          <a class="nav-item" href="account.html"><span>A</span>Account</a>
+          <a class="nav-item" href="goals.html"><span>*</span>Goals</a>
+        </nav>
+      </aside>
+      <section class="workspace">
+        <header class="topbar">
+          <div><p class="eyebrow">Trends</p><h1>Progress</h1><p class="page-copy">Your saved nutrition activity and trends. More detailed history charts are planned for a later alpha milestone.</p></div>
+        </header>
+        <section class="summary-grid">
+          <article class="goal-card"><p class="eyebrow">Food diary</p><div class="weight-row"><span><strong data-progress-items>0</strong>Items today</span><span><strong data-progress-calories>0</strong>Calories</span></div><div class="progress-track"><span data-progress-bar style="width: 0%"></span></div><p class="card-note">Your saved food entries will appear here.</p></article>
+          <article class="goal-card"><p class="eyebrow">Calories</p><div class="weight-row"><span><strong>1,890</strong>Average</span><span><strong>5 / 7</strong>On target</span></div><div class="progress-track"><span style="width: 71%"></span></div><p class="card-note">Weekly target adherence</p></article>
+        </section>
+        <section class="two-column-grid">
+          <section class="panel"><div class="panel-header"><div><p class="eyebrow">Week view</p><h2>Calories logged</h2></div></div><div class="chart-bars"><p class="page-copy">Detailed weekly charts are coming in the next alpha milestone.</p></div></section>
+          <section class="panel"><div class="panel-header"><div><p class="eyebrow">Milestones</p><h2>Timeline</h2></div></div><article class="timeline-item"><h3>Alpha tracking</h3><p>Food diary history is now stored to your account.</p></article><article class="timeline-item"><h3>More analytics coming</h3><p>Weekly trends and milestones are planned for a later release.</p></article></section>
+        </section>
+      </section>
+      <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a class="active" href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><a href="account.html"><span>A</span>Account</a></nav>
+    </main>
+  </body>
+</html>
+
+
+
