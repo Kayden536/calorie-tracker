@@ -10,6 +10,7 @@ const PulsePlateApp = (() => {
   let socialPeople = [];
   let socialConnections = [];
   let messagePollTimer;
+  const sharedMealCollapsed = new Set();
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -972,9 +973,23 @@ const PulsePlateApp = (() => {
       const body = categoryEntries.length
         ? categoryEntries.map(entry => `<article class="meal-card"><div><strong>${escapeHtml(entry.food_name)}</strong><p>${escapeHtml(entry.serving)}</p></div><strong>${moneyless(entry.calories)} cal</strong></article>`).join('')
         : '<p class="page-copy shared-meal-empty">No meals logged in this category.</p>';
-      return `<details class="shared-meal-category" open><summary><span><strong>${category.label}</strong><small>${categoryEntries.length} meal${categoryEntries.length === 1 ? '' : 's'} · ${moneyless(categoryTotals.calories)} cal</small></span><span class="shared-meal-chevron" aria-hidden="true">⌄</span></summary><div class="shared-meal-category-body">${body}</div></details>`;
+      const stateKey = `${friend.id}:${dateKey(selectedDate)}:${category.key.toLowerCase()}`;
+      const isOpen = !sharedMealCollapsed.has(stateKey);
+      return `<details class="shared-meal-category" data-shared-meal-category="${category.key.toLowerCase()}" data-shared-meal-state-key="${stateKey}"${isOpen ? ' open' : ''}><summary><span><strong>${category.label}</strong><small>${categoryEntries.length} meal${categoryEntries.length === 1 ? '' : 's'} · ${moneyless(categoryTotals.calories)} cal</small></span><span class="shared-meal-chevron" aria-hidden="true">⌄</span></summary><div class="shared-meal-category-body">${body}</div></details>`;
     }).join('');
     list.innerHTML = `<div class="shared-meal-summary"><strong>${moneyless(totals.calories)} calories</strong><span>Protein ${moneyless(totals.protein)}g · Carbs ${moneyless(totals.carbs)}g · Fat ${moneyless(totals.fat)}g</span></div><div class="shared-meal-categories">${categoryMarkup}</div>`;
+
+    // Preserve each category's collapsed state across any re-render of the shared-meal list.
+    // The shared-meal viewer is refreshed in several places, so relying only on the native
+    // <details> state would cause a collapsed section to pop open again.
+    list.querySelectorAll('[data-shared-meal-state-key]').forEach(details => {
+      details.addEventListener('toggle', () => {
+        const stateKey = details.dataset.sharedMealStateKey;
+        if (!stateKey) return;
+        if (details.open) sharedMealCollapsed.delete(stateKey);
+        else sharedMealCollapsed.add(stateKey);
+      });
+    });
   }
 
   function renderCalendar(){ const cal=$('[data-calendar-days]'); if(!cal)return; cal.innerHTML=''; for(let i=0;i<7;i++){const d=addDays(weekStart,i);const b=document.createElement('button');b.type='button';b.className='calendar-day'+(dateKey(d)===dateKey(selectedDate)?' active':'');b.innerHTML=`<span>${d.toLocaleDateString(undefined,{weekday:'short'})}</span><strong>${d.getDate()}</strong>`;b.onclick=async()=>{selectedDate=d; await renderPage();};cal.appendChild(b);} }
