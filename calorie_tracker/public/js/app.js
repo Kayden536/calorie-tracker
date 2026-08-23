@@ -833,7 +833,7 @@ const PulsePlateApp = (() => {
   async function wireSocialButtons(profile) {
     document.querySelectorAll('[data-add-person]').forEach(btn => btn.onclick = async () => {
       const addressee_id = btn.dataset.addPerson;
-      const { error } = await supabase.from('friend_connections').insert({ requester_id: user.id, addressee_id, status: 'pending', share_meals: false });
+      const { error } = await supabase.from('friend_connections').insert({ requester_id: user.id, addressee_id, status: 'pending', share_meals: false, requester_share_meals: false, addressee_share_meals: false });
       if (error) { alert(error.message); return; }
       await renderSocial();
     });
@@ -885,6 +885,13 @@ const PulsePlateApp = (() => {
     await renderMessages();
   }
 
+  function shareMealsEnabledBy(connection, ownerId) {
+    if (!connection || !ownerId) return false;
+    if (connection.requester_id === ownerId) return Boolean(connection.requester_share_meals);
+    if (connection.addressee_id === ownerId) return Boolean(connection.addressee_share_meals);
+    return false;
+  }
+
   async function renderSharingControls(profile) {
     const box = $('[data-sharing-controls]'); if (!box) return;
     const targetId = selectedMealFriendId || selectedFriendId;
@@ -892,16 +899,28 @@ const PulsePlateApp = (() => {
     const friend = personById(targetId); const connection = connectionFor(targetId);
     if (!friend || !connection || connection.status !== 'accepted') { box.hidden = true; return; }
     box.hidden = false;
-    const trainerAuto = profile.role === 'trainer' && friend.role === 'user';
-    const userViewingTrainer = profile.role === 'user' && friend.role === 'trainer';
-    if (trainerAuto) {
-      box.innerHTML = '<strong>Client sharing</strong><p class="page-copy">This client\'s daily food log is automatically visible to you as their personal trainer.</p>';
-    } else if (userViewingTrainer) {
-      box.innerHTML = '<strong>Trainer sharing</strong><p class="page-copy">Your daily food log is automatically visible to this personal trainer while you are connected. This cannot be turned off for trainers.</p>';
-    } else {
-      box.innerHTML = `<label class="toggle-row"><input type="checkbox" data-share-meals-toggle ${connection.share_meals ? 'checked' : ''}><span><strong>Share my daily food log with ${escapeHtml(friend.display_name)}</strong><small>You can turn this on or off for this friend.</small></span></label>`;
-      box.querySelector('[data-share-meals-toggle]')?.addEventListener('change', toggleMealSharing);
-    }
+
+    const myShare = shareMealsEnabledBy(connection, user.id);
+    const friendShare = shareMealsEnabledBy(connection, friend.id);
+    const trainerViewingClient = profile.role === 'trainer' && friend.role === 'user';
+    const clientViewingTrainer = profile.role === 'user' && friend.role === 'trainer';
+
+    const automaticTrainerNote = trainerViewingClient
+      ? `<p class="page-copy">You can always view this client's daily food log as their personal trainer. You can also choose to share your own food log with them.</p>`
+      : '';
+    const mandatoryClientSharingNote = clientViewingTrainer
+      ? `<div class="sharing-info"><strong>Meal sharing with your personal trainer cannot be disabled.</strong><p class="page-copy">Your daily food log is shared with your personal trainer while you are connected.</p></div>`
+      : '';
+    const friendStatus = friendShare
+      ? `${escapeHtml(friend.display_name)} is sharing their daily food log with you.`
+      : `${escapeHtml(friend.display_name)} is not currently sharing their daily food log with you.`;
+
+    const mySharingControl = clientViewingTrainer
+      ? mandatoryClientSharingNote
+      : `<label class="toggle-row"><input type="checkbox" data-share-meals-toggle ${myShare ? 'checked' : ''}><span><strong>Share my daily food log with ${escapeHtml(friend.display_name)}</strong><small>You can turn your own meal sharing on or off for this friend.</small></span></label>`;
+
+    box.innerHTML = `${automaticTrainerNote}${mySharingControl}<p class="page-copy sharing-status">${friendStatus}</p>`;
+    box.querySelector('[data-share-meals-toggle]')?.addEventListener('change', toggleMealSharing);
   }
 
   async function toggleMealSharing(event) {
@@ -911,12 +930,6 @@ const PulsePlateApp = (() => {
     if (!connection) return;
     const { data: currentProfile, error: profileError } = await supabase.from('profiles').select('role').eq('id', user.id).single();
     if (profileError) { alert(profileError.message); event.target.checked = !event.target.checked; return; }
-    const friend = personById(targetId);
-    if (currentProfile.role === 'user' && friend?.role === 'trainer') {
-      event.target.checked = true;
-      alert('Meals shared with a personal trainer cannot be turned off.');
-      return;
-    }
     const { error } = await supabase.rpc('set_meal_sharing', { connection_id: connection.id, enabled: event.target.checked });
     if (error) {
       alert(error.message);
@@ -925,6 +938,7 @@ const PulsePlateApp = (() => {
     }
     await loadSocialData();
     renderFriendSelectors();
+    await renderSharingControls(currentProfile);
     await renderSharedMeals(currentProfile);
   }
 
@@ -945,10 +959,12 @@ const PulsePlateApp = (() => {
     }
 
     if (title) title.textContent = `${friend.display_name}\'s meals`;
-    const canView = profile.role === 'trainer' && friend.role === 'user' || profile.role === 'user' && friend.role === 'trainer' || connection.share_meals;
+    const friendShare = shareMealsEnabledBy(connection, friend.id);
+    const canView = (profile.role === 'trainer' && friend.role === 'user') || friendShare;
     if (!canView) {
       if (note) note.textContent = `${friend.display_name} has not enabled meal sharing with you.`;
       list.innerHTML = '<p class="page-copy">Meals are private for this friend right now.</p>';
+      await renderSharingControls(profile);
       return;
     }
 
