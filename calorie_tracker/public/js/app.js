@@ -960,7 +960,21 @@ const PulsePlateApp = (() => {
       list.innerHTML = `<div class="share-preview"><strong>${escapeHtml(friend.display_name)} has no food logged for this day.</strong></div>`;
       return;
     }
-    list.innerHTML = `<div class="shared-meal-summary"><strong>${moneyless(totals.calories)} calories</strong><span>Protein ${moneyless(totals.protein)}g · Carbs ${moneyless(totals.carbs)}g · Fat ${moneyless(totals.fat)}g</span></div>${entries.map(entry => `<article class="meal-card"><div><strong>${escapeHtml(entry.food_name)}</strong><p>${escapeHtml(entry.meal)} · ${escapeHtml(entry.serving)}</p></div><strong>${moneyless(entry.calories)} cal</strong></article>`).join('')}`;
+    const mealCategories = [
+      { key: 'Breakfast', label: 'Breakfast' },
+      { key: 'Lunch', label: 'Lunch' },
+      { key: 'Dinner', label: 'Dinner' },
+      { key: 'Snack', label: 'Snack' }
+    ];
+    const categoryMarkup = mealCategories.map(category => {
+      const categoryEntries = entries.filter(entry => String(entry.meal || '').trim().toLowerCase() === category.key.toLowerCase());
+      const categoryTotals = totalsFor(categoryEntries);
+      const body = categoryEntries.length
+        ? categoryEntries.map(entry => `<article class="meal-card"><div><strong>${escapeHtml(entry.food_name)}</strong><p>${escapeHtml(entry.serving)}</p></div><strong>${moneyless(entry.calories)} cal</strong></article>`).join('')
+        : '<p class="page-copy shared-meal-empty">No meals logged in this category.</p>';
+      return `<details class="shared-meal-category" open><summary><span><strong>${category.label}</strong><small>${categoryEntries.length} meal${categoryEntries.length === 1 ? '' : 's'} · ${moneyless(categoryTotals.calories)} cal</small></span><span class="shared-meal-chevron" aria-hidden="true">⌄</span></summary><div class="shared-meal-category-body">${body}</div></details>`;
+    }).join('');
+    list.innerHTML = `<div class="shared-meal-summary"><strong>${moneyless(totals.calories)} calories</strong><span>Protein ${moneyless(totals.protein)}g · Carbs ${moneyless(totals.carbs)}g · Fat ${moneyless(totals.fat)}g</span></div><div class="shared-meal-categories">${categoryMarkup}</div>`;
   }
 
   function renderCalendar(){ const cal=$('[data-calendar-days]'); if(!cal)return; cal.innerHTML=''; for(let i=0;i<7;i++){const d=addDays(weekStart,i);const b=document.createElement('button');b.type='button';b.className='calendar-day'+(dateKey(d)===dateKey(selectedDate)?' active':'');b.innerHTML=`<span>${d.toLocaleDateString(undefined,{weekday:'short'})}</span><strong>${d.getDate()}</strong>`;b.onclick=async()=>{selectedDate=d; await renderPage();};cal.appendChild(b);} }

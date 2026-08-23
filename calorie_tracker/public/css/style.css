@@ -1230,6 +1230,72 @@ a.date-button {
   margin: 0;
 }
 
+.shared-meal-categories {
+  display: grid;
+  gap: .75rem;
+}
+
+.shared-meal-category {
+  border: 1px solid var(--line);
+  border-radius: .9rem;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.shared-meal-category summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .9rem 1rem;
+  user-select: none;
+}
+
+.shared-meal-category summary::-webkit-details-marker {
+  display: none;
+}
+
+.shared-meal-category summary > span:first-child {
+  display: grid;
+  gap: .2rem;
+}
+
+.shared-meal-category summary strong {
+  font-size: .98rem;
+}
+
+.shared-meal-category summary small {
+  color: var(--muted);
+  font-size: .8rem;
+}
+
+.shared-meal-chevron {
+  font-size: 1.2rem;
+  color: var(--muted);
+  transition: transform .18s ease;
+}
+
+.shared-meal-category[open] .shared-meal-chevron {
+  transform: rotate(180deg);
+}
+
+.shared-meal-category-body {
+  display: grid;
+  gap: .65rem;
+  padding: 0 1rem 1rem;
+}
+
+.shared-meal-category-body .meal-card {
+  background: var(--surface);
+}
+
+.shared-meal-empty {
+  margin: 0;
+  padding: .25rem 0 .1rem;
+}
+
 .sharing-controls {
   margin-top: 1rem;
 }
