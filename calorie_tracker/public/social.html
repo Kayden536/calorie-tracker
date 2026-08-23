@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MacroSync Friends</title>
+    <link rel="stylesheet" href="css/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="js/supabase-client.js" defer></script>
+    <script src="js/app.js" defer></script>
+  </head>
+  <body data-page="social">
+    <main class="app-shell">
+      <aside class="sidebar" aria-label="Primary navigation">
+        <a class="brand" href="index.html"><span class="brand-mark">P</span><span><strong>MacroSync</strong><small>Nutrition planner · Alpha</small></span></a>
+        <nav class="nav-list">
+          <a class="nav-item" href="index.html"><span>H</span>Dashboard</a>
+          <a class="nav-item" href="log_food.html"><span>+</span>Log food</a>
+          <a class="nav-item" href="progress.html"><span>O</span>Progress</a>
+          <a class="nav-item" href="recipes.html"><span>=</span>Recipes</a>
+          <a class="nav-item active" href="social.html"><span>@</span>Friends</a>
+          <a class="nav-item" href="account.html"><span>A</span>Account</a>
+          <a class="nav-item" href="goals.html"><span>*</span>Goals</a>
+        </nav>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Friends and sharing</p>
+            <h1>Social hub</h1>
+            <p class="page-copy">Find other MacroSync users, connect with friends, message them, and control food-log sharing.</p>
+          </div>
+        </header>
+
+        <section class="social-discovery panel">
+          <div class="panel-header"><div><p class="eyebrow">Find people</p><h2>People on MacroSync</h2><p class="page-copy">Search signed-up users by display name or email, then send a friend request.</p></div></div>
+          <div class="field"><label for="friendSearch">Search friends</label><input id="friendSearch" data-friend-search type="search" placeholder="Search by name or email" autocomplete="off" /></div>
+          <div class="people-list" data-people-list></div>
+        </section>
+
+        <section class="two-column-grid">
+          <section class="panel">
+            <div class="panel-header"><div><p class="eyebrow">Your friends</p><h2>Connections</h2></div></div>
+            <div class="friend-list" data-friend-list><p class="page-copy">Loading friends…</p></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">In-app messaging</p>
+                <h2 data-chat-title>Select a friend</h2>
+                <p class="page-copy">Switch conversations here without leaving the Friends page.</p>
+              </div>
+            </div>
+            <div class="field compact-field">
+              <label for="messageFriendSelect">Conversation</label>
+              <select id="messageFriendSelect" data-message-friend-select></select>
+            </div>
+            <div class="message-thread" data-message-thread><p class="page-copy">Select a friend to view messages.</p></div>
+            <div class="message-form">
+              <div class="field"><label for="messageText">Message</label><input id="messageText" data-message-text placeholder="Write a message…" autocomplete="off" /></div>
+              <button class="primary-button" type="button" data-send-message>Send</button>
+            </div>
+          </section>
+        </section>
+
+        <section class="panel meal-sharing-panel" data-meal-view-panel>
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Shared meals</p>
+              <h2 data-meal-view-title>Choose whose meals to view</h2>
+              <p class="page-copy" data-meal-view-note>Select an accepted friend. Personal trainers can always view their clients' daily food logs; other friends only appear when that person has enabled sharing.</p>
+            </div>
+          </div>
+          <div class="field compact-field">
+            <label for="mealFriendSelect">Meals from</label>
+            <select id="mealFriendSelect" data-meal-friend-select></select>
+          </div>
+          <div class="shared-meal-list" data-shared-meal-list><p class="page-copy">Select a friend to view shared meals.</p></div>
+          <div class="sharing-controls" data-sharing-controls hidden></div>
+        </section>
+      </section>
+
+      <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a class="active" href="social.html"><span>@</span>Friends</a><a href="account.html"><span>A</span>Account</a></nav>
+    </main>
+  </body>
+</html>
+
+
+

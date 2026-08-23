@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MacroSync — Alpha</title>
+  <script>
+    (() => {
+      const theme = localStorage.getItem('macrosync-theme') || localStorage.getItem('pulseplate-theme') || 'dark';
+      if (theme === 'light') document.documentElement.classList.add('macrosync-light-preload');
+    })();
+  </script>
+  <link rel="stylesheet" href="css/style.css" />
+  <style>
+    .auth-shell{min-height:100vh;display:grid;place-items:center;padding:1rem}.auth-card{width:min(100%,32rem);padding:1.5rem;border:1px solid var(--line);border-radius:1.2rem;background:rgba(20,28,43,.96);box-shadow:var(--shadow)}.auth-logo{display:flex;align-items:center;gap:.75rem;margin-bottom:1.5rem}.auth-logo .brand-mark{display:grid;width:2.8rem;height:2.8rem;place-items:center;border-radius:.85rem;background:linear-gradient(135deg,var(--blue),var(--red));font-weight:900}.auth-tabs{display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin:1rem 0}.auth-tabs button{min-height:2.8rem;border:1px solid var(--line);border-radius:.8rem;background:var(--surface-2);color:var(--ink);font-weight:800}.auth-tabs button.active{background:linear-gradient(135deg,var(--blue),var(--red));color:#fff}.auth-card form{display:grid;gap:.8rem}.auth-card input{width:100%;min-height:2.8rem;padding:.65rem .75rem;border:1px solid var(--line);border-radius:.8rem;background:var(--surface-2);color:var(--ink)}.auth-status{min-height:1.4rem;color:var(--muted);font-size:.9rem}.alpha-note{margin-top:1rem;padding:.8rem;border:1px solid var(--line);border-radius:.8rem;color:var(--muted);font-size:.82rem;line-height:1.45}
+  </style>
+</head>
+<body>
+  <script>
+    if (document.documentElement.classList.contains('macrosync-light-preload')) document.body.classList.add('light-theme');
+  </script>
+  <main class="auth-shell">
+    <section class="auth-card">
+      <div class="auth-logo"><span class="brand-mark">P</span><div><strong>MacroSync</strong><div class="page-copy">Nutrition planner · Alpha</div></div></div>
+      <h1>Welcome</h1>
+      <p class="page-copy">Create an account to save your food diary and goals across devices.</p>
+      <div class="auth-tabs"><button id="loginTab" class="active" type="button">Log in</button><button id="signupTab" type="button">Create account</button></div>
+      <form id="authForm">
+        <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
+        <div class="field" id="passwordField"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" minlength="8"></div>
+        <div class="field" id="confirmPasswordField" hidden><label for="confirmPassword">New password</label><input id="confirmPassword" type="password" autocomplete="new-password" minlength="8"></div>
+        <div class="field" id="nameField" hidden><label for="displayName">Display name</label><input id="displayName" autocomplete="name"></div>
+        <button class="primary-button" id="authSubmit" type="submit">Log in</button>
+        <button class="auth-link-button" id="forgotPassword" type="button">Forgot password?</button>
+        <button class="auth-link-button" id="backToLogin" type="button" hidden>Back to log in</button>
+        <p class="auth-status" id="authStatus" role="status"></p>
+      </form>
+      <div class="alpha-note"><strong>MacroSync Alpha</strong><br>This is an early public test version. Nutrition data comes from USDA FoodData Central. Features may change as the app develops.</div>
+    </section>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="js/supabase-client.js"></script>
+  <script src="js/auth.js"></script>
+</body>
+</html>

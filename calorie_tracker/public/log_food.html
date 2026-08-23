@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MacroSync Log Food</title>
+    <link rel="stylesheet" href="css/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="js/supabase-client.js" defer></script>
+    <script src="js/app.js" defer></script>
+  </head>
+  <body data-page="log">
+    <main class="app-shell">
+      <aside class="sidebar" aria-label="Primary navigation">
+        <a class="brand" href="index.html"><span class="brand-mark">P</span><span><strong>MacroSync</strong><small>Nutrition planner · Alpha</small></span></a>
+        <nav class="nav-list">
+          <a class="nav-item" href="index.html"><span>H</span>Dashboard</a>
+          <a class="nav-item active" href="log_food.html"><span>+</span>Log food</a>
+          <a class="nav-item" href="progress.html"><span>O</span>Progress</a>
+          <a class="nav-item" href="recipes.html"><span>=</span>Recipes</a>
+          <a class="nav-item" href="social.html"><span>@</span>Friends</a>
+          <a class="nav-item" href="account.html"><span>A</span>Account</a>
+          <a class="nav-item" href="goals.html"><span>*</span>Goals</a>
+        </nav>
+      </aside>
+      <section class="workspace">
+        <header class="topbar">
+          <div><p class="eyebrow" data-date-label>Today</p><h1>Log food</h1><p class="page-copy">Search existing foods, choose the amount you ate, or create a personal food when it is not already in the database.</p></div>
+          <div class="top-actions"><button class="icon-button" type="button" data-prev-day>&lt;</button><button class="date-button" type="button" data-today-button>Today</button><button class="icon-button" type="button" data-next-day>&gt;</button></div>
+        </header>
+        <section class="panel calendar-panel"><div class="calendar-strip"><button class="icon-button" type="button" data-prev-week>&lt;</button><div class="calendar-days" data-calendar-days></div><button class="icon-button" type="button" data-next-week>&gt;</button></div></section>
+
+        <section class="two-column-grid">
+          <section class="panel">
+            <div class="panel-header"><div><p class="eyebrow">Existing foods</p><h2>Add food</h2></div></div>
+            <div class="field"><label for="foodSearch">Search the food database</label><input id="foodSearch" data-food-search placeholder="Search chicken, oats, yogurt..." autocomplete="off" /></div>
+            <div class="food-database-list" data-food-database-list><p class="page-copy">Search for a food to get started.</p></div>
+            <div class="panel-divider"></div>
+            <div class="panel-header compact"><div><p class="eyebrow">Your database</p><h2>My Foods</h2></div><button class="ghost-button" type="button" data-manual-toggle>+ Create Manual Food</button></div>
+            <div class="food-database-list" data-personal-food-list><p class="page-copy">You have not created any personal foods yet.</p></div>
+            <p class="manual-note">Selecting an existing food opens a serving window. Changing the amount or serving type automatically recalculates its macros.</p>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header"><div><p class="eyebrow">Quick logging</p><h2>Saved Meals</h2></div><a class="ghost-button" href="recipes.html">Recipes</a></div>
+            <div data-saved-meal-list><p class="page-copy">No saved meals yet.</p></div>
+            <p class="page-copy">Saved meals are private to your account and are designed for foods you log together often.</p>
+            <div class="panel-divider"></div>
+            <div class="panel-header compact"><div><p class="eyebrow">Selected date</p><h2>Meal preview</h2></div></div>
+            <div data-meal-list></div>
+          </section>
+        </section>
+      </section>
+      <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a class="active" href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><a href="account.html"><span>A</span>Account</a></nav>
+    </main>
+  </body>
+</html>
