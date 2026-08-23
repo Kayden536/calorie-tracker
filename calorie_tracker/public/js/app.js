@@ -142,6 +142,7 @@ const PulsePlateApp = (() => {
         <div class="settings-menu" id="alphaSettingsMenu" hidden>
           <div class="settings-menu-title">MacroSync</div>
           <button type="button" data-notifications>Notifications <span class="menu-badge" data-menu-notification-count hidden>0</span></button>
+          <button type="button" data-message-notification-settings>Message notifications <span data-message-notification-state>On</span></button>
           <button type="button" data-theme-toggle>Light mode</button>
           <button type="button" data-change-email>Change email</button>
           <a href="account.html">Account</a>
@@ -172,14 +173,18 @@ const PulsePlateApp = (() => {
     });
     $('[data-change-email]')?.addEventListener('click', () => { closeMenu(); showEmailChangeModal(); });
     $('[data-notifications]')?.addEventListener('click', () => { closeMenu(); showNotificationsModal(); });
+    $('[data-message-notification-settings]')?.addEventListener('click', () => { closeMenu(); showMessageNotificationSettingsModal(); });
     $('[data-enable-browser-notifications]')?.addEventListener('click', async () => {
       closeMenu();
+      const messageNotificationsEnabled = await getMessageNotificationSetting().catch(() => true);
+      if (!messageNotificationsEnabled) { alert('Message notifications are turned off in MacroSync settings. Turn them on first to enable browser notifications.'); return; }
       if (!('Notification' in window)) { alert('This browser does not support browser notifications.'); return; }
       const permission = await Notification.requestPermission();
       if (permission === 'granted') new Notification('MacroSync notifications enabled', { body: 'You will be notified when new messages arrive while MacroSync is open.' });
     });
     applyTheme();
     refreshNotifications().catch(console.error);
+    refreshMessageNotificationSetting().catch(console.error);
     if (!window.__macroSyncNotificationTimer) {
       window.__macroSyncNotificationTimer = setInterval(() => refreshNotifications().catch(console.error), 4000);
     }
@@ -197,6 +202,22 @@ const PulsePlateApp = (() => {
     $$('[data-theme-toggle]').forEach(button => { button.textContent = theme === 'light' ? 'Dark mode' : 'Light mode'; });
   }
 
+  async function getMessageNotificationSetting() {
+    const { data, error } = await supabase.from('profiles').select('message_notifications_enabled').eq('id', user.id).single();
+    if (error) {
+      if (/message_notifications_enabled/i.test(error.message || '')) return true;
+      throw error;
+    }
+    return data?.message_notifications_enabled !== false;
+  }
+
+  async function refreshMessageNotificationSetting() {
+    if (!supabase || !user) return;
+    const enabled = await getMessageNotificationSetting();
+    const state = $('[data-message-notification-state]');
+    if (state) state.textContent = enabled ? 'On' : 'Off';
+  }
+
   async function getUnreadNotifications() {
     const { data, error } = await supabase.from('notifications').select('*').eq('recipient_id', user.id).is('read_at', null).order('created_at', { ascending: false }).limit(25);
     if (error) {
@@ -209,6 +230,14 @@ const PulsePlateApp = (() => {
 
   async function refreshNotifications() {
     if (!supabase || !user) return;
+    const messageNotificationsEnabled = await getMessageNotificationSetting().catch(() => true);
+    if (!messageNotificationsEnabled) {
+      const badge = $('[data-notification-badge]');
+      const menuCount = $('[data-menu-notification-count]');
+      if (badge) badge.hidden = true;
+      if (menuCount) menuCount.hidden = true;
+      return;
+    }
     const notifications = await getUnreadNotifications();
     const count = notifications.length;
     const badge = $('[data-notification-badge]');
@@ -224,6 +253,41 @@ const PulsePlateApp = (() => {
         new Notification(latest.title || 'New MacroSync message', { body: latest.body || 'You have a new notification.' });
       }
     }
+  }
+
+  async function showMessageNotificationSettingsModal() {
+    const enabled = await getMessageNotificationSetting().catch(() => true);
+    const overlay = document.createElement('div');
+    overlay.className = 'settings-overlay';
+    overlay.innerHTML = `
+      <section class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="messageNotificationSettingsTitle">
+        <div class="modal-header"><div><p class="eyebrow">Notification settings</p><h2 id="messageNotificationSettingsTitle">Message notifications</h2></div><button type="button" class="icon-button" data-close-settings>×</button></div>
+        <label class="toggle-row notification-setting-row"><input type="checkbox" data-message-notifications-toggle ${enabled ? 'checked' : ''}><span><strong>Notify me when I receive a message</strong><small>Turn this off if you do not want MacroSync to create notifications for new messages sent to you.</small></span></label>
+        <p class="settings-status" data-message-notification-status role="status"></p>
+        <div class="modal-actions"><button class="primary-button" type="button" data-close-settings>Done</button></div>
+      </section>`;
+    document.body.appendChild(overlay);
+    overlay.querySelectorAll('[data-close-settings]').forEach(b => b.onclick = () => overlay.remove());
+    overlay.querySelector('[data-message-notifications-toggle')?.addEventListener('change', async event => {
+      const toggle = event.target;
+      const status = overlay.querySelector('[data-message-notification-status]');
+      toggle.disabled = true;
+      status.textContent = 'Saving…';
+      const { error } = await supabase.from('profiles').update({ message_notifications_enabled: toggle.checked }).eq('id', user.id);
+      toggle.disabled = false;
+      if (error) {
+        toggle.checked = !toggle.checked;
+        status.textContent = error.message;
+        return;
+      }
+      status.textContent = toggle.checked ? 'Message notifications are enabled.' : 'Message notifications are disabled.';
+      const state = $('[data-message-notification-state]');
+      if (state) state.textContent = toggle.checked ? 'On' : 'Off';
+      if (!toggle.checked) {
+        window.__macroSyncLastUnreadCount = 0;
+        window.__macroSyncLastNotificationId = null;
+      }
+    });
   }
 
   async function showNotificationsModal() {

@@ -1580,3 +1580,9 @@ body.light-theme .alpha-error {
 body.light-theme .auth-card {
   background: var(--surface) !important;
 }
+
+
+/* Message notification preference */
+.notification-setting-row { margin-top: .25rem; }
+.notification-setting-row small { display:block; margin-top:.2rem; color:var(--muted); line-height:1.45; }
+.settings-menu [data-message-notification-state] { color:var(--muted); font-size:.75rem; font-weight:800; }

@@ -9,6 +9,7 @@ create table if not exists public.profiles (
   business_name text,
   primary_goal text not null default 'health' check (primary_goal in ('lose','maintain','gain','health','custom')),
   onboarding_complete boolean not null default false,
+  message_notifications_enabled boolean not null default true,
   created_at timestamptz not null default now()
 );
 
@@ -44,6 +45,7 @@ alter table public.profiles add column if not exists email text;
 alter table public.profiles add column if not exists business_name text;
 alter table public.profiles add column if not exists primary_goal text not null default 'health';
 alter table public.profiles add column if not exists onboarding_complete boolean not null default false;
+alter table public.profiles add column if not exists message_notifications_enabled boolean not null default true;
 
 create index if not exists food_entries_user_date_idx on public.food_entries(user_id, logged_date, created_at);
 
@@ -389,8 +391,15 @@ begin
   values (auth.uid(), p_recipient_id, trim(p_body))
   returning * into new_message;
 
-  insert into public.notifications(recipient_id, sender_id, type, title, body, message_id)
-  values (p_recipient_id, auth.uid(), 'message', 'New message', trim(p_body), new_message.id);
+  -- Respect the recipient's notification preference. Messaging itself always succeeds.
+  if exists (
+    select 1 from public.profiles p
+    where p.id = p_recipient_id
+      and p.message_notifications_enabled = true
+  ) then
+    insert into public.notifications(recipient_id, sender_id, type, title, body, message_id)
+    values (p_recipient_id, auth.uid(), 'message', 'New message', trim(p_body), new_message.id);
+  end if;
 
   return new_message;
 end;
