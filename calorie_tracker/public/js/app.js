@@ -142,13 +142,10 @@ const PulsePlateApp = (() => {
         </button>
         <div class="settings-menu" id="alphaSettingsMenu" hidden>
           <div class="settings-menu-title">MacroSync</div>
+          <a href="settings.html">Settings</a>
           <button type="button" data-notifications>Notifications <span class="menu-badge" data-menu-notification-count hidden>0</span></button>
           <button type="button" data-message-notification-settings>Message notifications <span data-message-notification-state>On</span></button>
           <button type="button" data-theme-toggle>Light mode</button>
-          <button type="button" data-change-email>Change email</button>
-          <a href="account.html">Account</a>
-          <a href="goals.html">Goals</a>
-          <a href="social.html">Friends & messages</a>
           <button type="button" data-enable-browser-notifications>Enable browser notifications</button>
           <button type="button" data-logout>Log out</button>
         </div>
@@ -172,7 +169,6 @@ const PulsePlateApp = (() => {
       localStorage.setItem('pulseplate-theme', next);
       applyTheme();
     });
-    $('[data-change-email]')?.addEventListener('click', () => { closeMenu(); showEmailChangeModal(); });
     $('[data-notifications]')?.addEventListener('click', () => { closeMenu(); showNotificationsModal(); });
     $('[data-message-notification-settings]')?.addEventListener('click', () => { closeMenu(); showMessageNotificationSettingsModal(); });
     $('[data-enable-browser-notifications]')?.addEventListener('click', async () => {
@@ -346,6 +342,7 @@ const PulsePlateApp = (() => {
     if (page === 'dashboard' || page === 'index') await renderDashboard();
     if (page === 'log') await renderFoodLogger();
     if (page === 'account') await renderAccount();
+    if (page === 'settings') await renderSettings();
     if (page === 'goals') await renderGoals();
     if (page === 'progress') await renderProgress();
     if (page === 'recipes') await renderRecipes();
@@ -600,6 +597,70 @@ const PulsePlateApp = (() => {
   async function saveFood() { openManualFoodModal(); }
 
   async function renderSelectedDateEntries(){ const list=$('[data-meal-list]'); if(!list)return; const entries=await getEntries(); await renderMeals(entries); }
+
+  async function renderSettings(){
+    const nameInput = $('#settingsDisplayName');
+    const emailInput = $('#settingsEmail');
+    const roleText = $('#settingsRole');
+    const status = $('[data-settings-status]');
+    const feedbackStatus = $('[data-feedback-status]');
+    const { data: profile, error } = await supabase.from('profiles').select('display_name,email,role,business_name').eq('id', user.id).single();
+    if (error) { if (status) status.textContent = error.message; return; }
+    if (nameInput) nameInput.value = profile?.display_name || user.user_metadata?.display_name || '';
+    if (emailInput) emailInput.value = user.email || profile?.email || '';
+    if (roleText) roleText.textContent = profile?.role === 'trainer' ? `Personal trainer${profile?.business_name ? ` · ${profile.business_name}` : ''}` : 'Normal user';
+
+    $('[data-settings-profile-form]')?.addEventListener('submit', async event => {
+      event.preventDefault();
+      const displayName = nameInput.value.trim();
+      if (!displayName) { status.textContent = 'Display name cannot be empty.'; return; }
+      status.textContent = 'Saving…';
+      const { error: profileError } = await supabase.from('profiles').update({ display_name: displayName }).eq('id', user.id);
+      if (profileError) { status.textContent = profileError.message; return; }
+      const { error: authError } = await supabase.auth.updateUser({ data: { display_name: displayName } });
+      if (authError) { status.textContent = authError.message; return; }
+      user.user_metadata = { ...(user.user_metadata || {}), display_name: displayName };
+      status.textContent = 'Display name updated.';
+    });
+
+    $('[data-settings-password-form]')?.addEventListener('submit', async event => {
+      event.preventDefault();
+      const password = $('#settingsPassword').value;
+      const confirm = $('#settingsPasswordConfirm').value;
+      if (password.length < 8) { status.textContent = 'Password must be at least 8 characters.'; return; }
+      if (password !== confirm) { status.textContent = 'The passwords do not match.'; return; }
+      status.textContent = 'Updating password…';
+      const { error: passwordError } = await supabase.auth.updateUser({ password });
+      if (passwordError) { status.textContent = passwordError.message; return; }
+      $('#settingsPassword').value = '';
+      $('#settingsPasswordConfirm').value = '';
+      status.textContent = 'Password updated successfully.';
+    });
+
+    $('[data-settings-email-form]')?.addEventListener('submit', async event => {
+      event.preventDefault();
+      const newEmail = emailInput.value.trim();
+      if (!newEmail) { status.textContent = 'Enter an email address.'; return; }
+      if (newEmail === user.email) { status.textContent = 'That is already your current email.'; return; }
+      status.textContent = 'Updating email…';
+      const { error: emailError } = await supabase.auth.updateUser({ email: newEmail });
+      if (emailError) { status.textContent = emailError.message; return; }
+      await supabase.from('profiles').update({ email: newEmail }).eq('id', user.id);
+      status.textContent = 'Email change requested. Check your inbox for any confirmation link.';
+    });
+
+    $('[data-feedback-form]')?.addEventListener('submit', async event => {
+      event.preventDefault();
+      const category = $('#feedbackCategory').value;
+      const message = $('#feedbackMessage').value.trim();
+      if (!message) { feedbackStatus.textContent = 'Please enter your feedback.'; return; }
+      feedbackStatus.textContent = 'Sending feedback…';
+      const { error: feedbackError } = await supabase.from('feedback').insert({ user_id: user.id, category, message });
+      if (feedbackError) { feedbackStatus.textContent = feedbackError.message; return; }
+      $('#feedbackMessage').value = '';
+      feedbackStatus.textContent = 'Thanks! Your feedback was submitted.';
+    });
+  }
 
   async function renderAccount(){
     const {data:profile,error}=await supabase.from('profiles').select('*').eq('id',user.id).single();

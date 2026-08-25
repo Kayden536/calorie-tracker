@@ -1652,3 +1652,14 @@ body.light-theme .auth-card {
 .notification-setting-row { margin-top: .25rem; }
 .notification-setting-row small { display:block; margin-top:.2rem; color:var(--muted); line-height:1.45; }
 .settings-menu [data-message-notification-state] { color:var(--muted); font-size:.75rem; font-weight:800; }
+
+
+/* Settings page */
+.settings-page-grid { align-items: start; }
+.settings-divider { border-top: 1px solid var(--border, rgba(255,255,255,.09)); padding-top: 18px; margin-top: 18px; }
+.settings-stack { display: grid; gap: 12px; }
+.settings-stack textarea, .settings-stack select { width: 100%; box-sizing: border-box; }
+.settings-status { min-height: 1.3em; margin: 12px 0 0; }
+.settings-menu a { display: block; padding: 10px 12px; color: inherit; text-decoration: none; border-radius: 10px; }
+.settings-menu a:hover { background: rgba(255,255,255,.06); }
+@media (max-width: 900px) { .settings-page-grid { grid-template-columns: 1fr; } }
