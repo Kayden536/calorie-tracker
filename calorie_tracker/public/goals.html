@@ -15,7 +15,7 @@
         <a class="brand" href="index.html"><span class="brand-mark">P</span><span><strong>MacroSync</strong><small>Nutrition planner · Alpha</small></span></a>
         <nav class="nav-list">
           <a class="nav-item" href="index.html"><span>H</span>Dashboard</a><a class="nav-item" href="log_food.html"><span>+</span>Log food</a><a class="nav-item" href="progress.html"><span>O</span>Progress</a><a class="nav-item" href="recipes.html"><span>=</span>Recipes</a><a class="nav-item" href="social.html"><span>@</span>Friends</a>
-          <a class="nav-item" href="account.html"><span>A</span>Account</a>
+          <a class="nav-item" href="settings.html"><span>A</span>Settings</a>
           <a class="nav-item active" href="goals.html"><span>*</span>Goals</a>
         </nav>
       </aside>
@@ -33,11 +33,17 @@
           </section>
           <section class="panel">
             <div class="panel-header"><div><p class="eyebrow">Preferences</p><h2>Daily targets</h2></div></div>
-            <div class="onboarding-grid"><div class="field"><label for="proteinGoal">Protein (g)</label><input id="proteinGoal" type="number" min="0" max="1000"></div><div class="field"><label for="carbsGoal">Carbohydrates (g)</label><input id="carbsGoal" type="number" min="0" max="1500"></div><div class="field"><label for="fatGoal">Fat (g)</label><input id="fatGoal" type="number" min="0" max="500"></div></div><p class="page-copy">Your targets are used throughout the dashboard and food diary. You can update them whenever your goals change.</p>
+            <div class="onboarding-grid"><div class="field"><label for="proteinGoal">Protein (g)</label><input id="proteinGoal" type="number" min="0" max="1000"></div><div class="field"><label for="carbsGoal">Carbohydrates (g)</label><input id="carbsGoal" type="number" min="0" max="1500"></div><div class="field"><label for="fatGoal">Fat (g)</label><input id="fatGoal" type="number" min="0" max="500"></div></div>
+            <div class="auto-macro-box">
+              <div><p class="eyebrow">Automatic targets</p><h3>Calculate macros from weight and goal</h3><p class="page-copy">Automatic macro calculation is not yet available. It is coming at a later date. This feature will calculate your targets from your weight and goal once it is released.</p></div>
+              <button class="ghost-button" type="button" data-auto-calculate disabled>Calculate targets</button>
+              <p class="settings-status" data-auto-macro-status role="status"></p>
+            </div>
+            <p class="page-copy">Your targets are used throughout the dashboard and food diary. You can update them whenever your goals change.</p>
           </section>
         </section>
       </section>
-      <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><a href="account.html"><span>A</span>Account</a></nav>
+      <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><a href="goals.html"><span>*</span>Goals</a></nav>
     </main>
   </body>
 </html>

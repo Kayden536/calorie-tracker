@@ -12,6 +12,39 @@ const PulsePlateApp = (() => {
   let messagePollTimer;
   const sharedMealCollapsed = new Set();
 
+  // Automatic macro calculation scaffold.
+  // When the final nutrition factors are decided, only these values need to be
+  // filled in for each goal. Leave them null to keep the current manual targets.
+  // Formula: calories = weight * caloriesPerLb; protein = weight * proteinPerLb;
+  // fat = weight * fatPerLb; carbs = (calories - protein*4 - fat*9) / 4.
+  const AUTO_MACRO_FACTORS = {
+    lose:     { caloriesPerLb: null, proteinPerLb: null, fatPerLb: null },
+    maintain: { caloriesPerLb: null, proteinPerLb: null, fatPerLb: null },
+    gain:     { caloriesPerLb: null, proteinPerLb: null, fatPerLb: null }
+  };
+
+  function calculateAutoMacroTargets(weight, goal) {
+    const factors = AUTO_MACRO_FACTORS[goal];
+    const w = Number(weight);
+    if (!factors || !Number.isFinite(w) || w <= 0) return null;
+    if (![factors.caloriesPerLb, factors.proteinPerLb, factors.fatPerLb].every(v => Number.isFinite(Number(v)))) return null;
+    const calories = w * Number(factors.caloriesPerLb);
+    const protein = w * Number(factors.proteinPerLb);
+    const fat = w * Number(factors.fatPerLb);
+    const carbs = Math.max((calories - protein * 4 - fat * 9) / 4, 0);
+    return {
+      calorie_goal: Math.round(calories),
+      protein_goal: Math.round(protein * 10) / 10,
+      fat_goal: Math.round(fat * 10) / 10,
+      carbs_goal: Math.round(carbs * 10) / 10
+    };
+  }
+
+  function autoMacroRulesConfigured(goal) {
+    const factors = AUTO_MACRO_FACTORS[goal];
+    return !!factors && [factors.caloriesPerLb, factors.proteinPerLb, factors.fatPerLb].every(v => Number.isFinite(Number(v)));
+  }
+
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
   const dateKey = (date) => date.toISOString().slice(0, 10);
@@ -142,6 +175,7 @@ const PulsePlateApp = (() => {
         </button>
         <div class="settings-menu" id="alphaSettingsMenu" hidden>
           <div class="settings-menu-title">MacroSync</div>
+          <a href="index.html">Dashboard</a>
           <a href="settings.html">Settings</a>
           <button type="button" data-notifications>Notifications <span class="menu-badge" data-menu-notification-count hidden>0</span></button>
           <button type="button" data-message-notification-settings>Message notifications <span data-message-notification-state>On</span></button>
@@ -384,10 +418,13 @@ const PulsePlateApp = (() => {
     setWidth('[data-fat-bar]', totals.fat/goals.fat_goal*100);
     $$('.ring-fill').forEach(r => r.style.setProperty('--ring-offset', 352 - Math.min(totals.calories/goals.calorie_goal,1)*352));
     await renderMeals(entries);
+    await renderLastUsedMeal();
     renderCalendar();
   }
 
   function totalsFor(entries) { return entries.reduce((t,e)=>({calories:t.calories+Number(e.calories||0),protein:t.protein+Number(e.protein||0),carbs:t.carbs+Number(e.carbs||0),fat:t.fat+Number(e.fat||0)}),{calories:0,protein:0,carbs:0,fat:0}); }
+
+  const mealCollapsed = new Set();
 
   async function renderMeals(entries) {
     const list = $('[data-meal-list]'); if (!list) return;
@@ -395,8 +432,9 @@ const PulsePlateApp = (() => {
     const grouped = mealOrder.map(meal => ({ meal, items: entries.filter(e => e.meal === meal) }));
     list.innerHTML = grouped.map(group => {
       const calories = group.items.reduce((sum, e) => sum + Number(e.calories || 0), 0);
-      const isOpen = false;
-      return `<details class="meal-group ${group.meal.toLowerCase()}" ${isOpen ? 'open' : ''}>
+      const stateKey = `${dateKey(selectedDate)}:${group.meal.toLowerCase()}`;
+      const isOpen = !mealCollapsed.has(stateKey);
+      return `<details class="meal-group ${group.meal.toLowerCase()}" data-meal-state-key="${stateKey}" ${isOpen ? 'open' : ''}>
         <summary class="meal-group-header">
           <span class="meal-group-title"><span class="meal-chevron" aria-hidden="true">›</span><span><strong>${group.meal}</strong><small>${group.items.length ? `${group.items.length} item${group.items.length === 1 ? '' : 's'}` : 'No foods logged'}</small></span></span>
           <span class="meal-group-total">${moneyless(calories)} cal</span>
@@ -405,12 +443,77 @@ const PulsePlateApp = (() => {
           ${group.items.length ? group.items.map(e => `<article class="meal-item">
             <div class="meal-item-main"><strong>${escapeHtml(e.food_name)}</strong><span>${escapeHtml(e.serving)}</span></div>
             <div class="meal-item-nutrition"><strong>${moneyless(e.calories)} cal</strong><span>P ${moneyless(e.protein)}g</span><span>C ${moneyless(e.carbs)}g</span><span>F ${moneyless(e.fat)}g</span></div>
+            <div class="meal-item-actions"><button class="text-button" type="button" data-edit-entry="${e.id}">Edit</button><button class="text-button danger-button" type="button" data-delete-entry="${e.id}">Delete</button><button class="text-button" type="button" data-move-entry="${e.id}">Move</button></div>
           </article>`).join('') : '<p class="meal-empty-copy">No foods logged yet.</p>'}
           <div class="meal-group-actions"><a class="meal-add-link" href="log_food.html">+ Add to ${group.meal}</a>${group.items.length ? `<button class="text-button" type="button" data-save-current-meal="${group.meal}">Save this meal</button>` : ''}</div>
         </div>
       </details>`;
     }).join('');
+    list.querySelectorAll('[data-meal-state-key]').forEach(details => details.addEventListener('toggle', () => {
+      const key = details.dataset.mealStateKey;
+      if (details.open) mealCollapsed.delete(key); else mealCollapsed.add(key);
+    }));
     list.querySelectorAll('[data-save-current-meal]').forEach(button => button.addEventListener('click', () => saveCurrentMealAsSaved(button.dataset.saveCurrentMeal)));
+    list.querySelectorAll('[data-edit-entry]').forEach(button => button.addEventListener('click', () => { const entry = entries.find(e => String(e.id) === button.dataset.editEntry); if (entry) openEditEntryModal(entry); }));
+    list.querySelectorAll('[data-delete-entry]').forEach(button => button.addEventListener('click', async () => {
+      if (!confirm('Delete this food entry permanently?')) return;
+      const { error } = await supabase.from('food_entries').delete().eq('id', button.dataset.deleteEntry).eq('user_id', user.id);
+      if (error) return alert(error.message);
+      await renderPage();
+    }));
+    list.querySelectorAll('[data-move-entry]').forEach(button => button.addEventListener('click', () => { const entry = entries.find(e => String(e.id) === button.dataset.moveEntry); if (entry) openMoveEntryModal(entry); }));
+  }
+
+  function parseServingAmount(serving) {
+    const match = String(serving || '').match(/[-+]?\d*\.?\d+/);
+    return match ? Number(match[0]) : null;
+  }
+
+  async function openEditEntryModal(entry) {
+    const oldAmount = parseServingAmount(entry.serving) || 1;
+    const unitMatch = String(entry.serving || '').match(/[-+]?\d*\.?\d+\s*(.*)$/);
+    const unit = unitMatch?.[1]?.trim() || 'serving';
+    const overlay = document.createElement('div'); overlay.className='modal-overlay';
+    overlay.innerHTML = `<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Edit food</p><h2>${escapeHtml(entry.food_name)}</h2><p class="page-copy">Changing the amount scales the logged nutrition values proportionally.</p><div class="field"><label for="editEntryAmount">Amount</label><input id="editEntryAmount" type="number" min="0.01" step="0.01" value="${oldAmount}"></div><div class="field"><label for="editEntryUnit">Unit</label><input id="editEntryUnit" value="${escapeHtml(unit)}" maxlength="40"></div><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-save-edit type="button">Save changes</button></div></section>`;
+    document.body.appendChild(overlay); overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());
+    overlay.querySelector('[data-save-edit]').onclick=async()=>{
+      const amount=Number(overlay.querySelector('#editEntryAmount').value); const newUnit=overlay.querySelector('#editEntryUnit').value.trim() || 'serving';
+      if(!Number.isFinite(amount)||amount<=0)return alert('Enter a valid amount.');
+      const factor=oldAmount>0?amount/oldAmount:1;
+      const payload={serving:`${moneyless(amount)} ${newUnit}`,calories:Number(entry.calories||0)*factor,protein:Number(entry.protein||0)*factor,carbs:Number(entry.carbs||0)*factor,fat:Number(entry.fat||0)*factor};
+      const {error}=await supabase.from('food_entries').update(payload).eq('id',entry.id).eq('user_id',user.id); if(error)return alert(error.message);
+      overlay.remove(); await renderPage();
+    };
+  }
+
+  function openMoveEntryModal(entry) {
+    const overlay=document.createElement('div'); overlay.className='modal-overlay';
+    overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Move food</p><h2>${escapeHtml(entry.food_name)}</h2><div class="field"><label for="moveEntryMeal">Move to meal</label><select id="moveEntryMeal"><option>Breakfast</option><option>Lunch</option><option>Dinner</option><option>Snack</option></select></div><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-save-move type="button">Move food</button></div></section>`;
+    document.body.appendChild(overlay); overlay.querySelector('#moveEntryMeal').value=entry.meal; overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());
+    overlay.querySelector('[data-save-move]').onclick=async()=>{const meal=overlay.querySelector('#moveEntryMeal').value;if(meal===entry.meal){overlay.remove();return;}const {error}=await supabase.from('food_entries').update({meal}).eq('id',entry.id).eq('user_id',user.id);if(error)return alert(error.message);overlay.remove();await renderPage();};
+  }
+
+  async function getLastUsedMeal() {
+    const {data,error}=await supabase.from('food_entries').select('*').eq('user_id',user.id).order('created_at',{ascending:false}).limit(100);
+    if(error) throw error;
+    const rows=data||[]; if(!rows.length)return null;
+    const latest=rows[0];
+    const items=rows.filter(r=>r.logged_date===latest.logged_date && r.meal===latest.meal).sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at)));
+    return {date:latest.logged_date,meal:latest.meal,items};
+  }
+
+  async function renderLastUsedMeal() {
+    const box=$('[data-last-used-meal]'); if(!box)return;
+    try {
+      const meal=await getLastUsedMeal();
+      if(!meal||!meal.items.length){box.innerHTML='<p class="page-copy">No previous meal yet.</p>';return;}
+      const totals=totalsFor(meal.items);
+      box.innerHTML=`<button class="last-used-meal-card" type="button" data-add-last-used-meal><div><p class="eyebrow">${escapeHtml(meal.meal)}</p><h3>Last used meal</h3><span>${meal.items.length} item${meal.items.length===1?'':'s'} · ${moneyless(totals.calories)} cal</span></div><strong>Add</strong></button>`;
+      box.querySelector('[data-add-last-used-meal]').onclick=async()=>{
+        const payload=meal.items.map(item=>({user_id:user.id,logged_date:dateKey(selectedDate),meal:item.meal,food_name:item.food_name,serving:item.serving,fdc_id:item.fdc_id,calories:item.calories,protein:item.protein,carbs:item.carbs,fat:item.fat}));
+        const {error}=await supabase.from('food_entries').insert(payload); if(error)return alert(error.message); await renderPage();
+      };
+    } catch(error) { box.innerHTML=`<p class="page-copy">${escapeHtml(error.message)}</p>`; }
   }
 
   async function renderFoodLogger() {
@@ -604,7 +707,7 @@ const PulsePlateApp = (() => {
     const roleText = $('#settingsRole');
     const status = $('[data-settings-status]');
     const feedbackStatus = $('[data-feedback-status]');
-    const { data: profile, error } = await supabase.from('profiles').select('display_name,email,role,business_name').eq('id', user.id).single();
+    const { data: profile, error } = await supabase.from('profiles').select('display_name,email,role,business_name,is_admin').eq('id', user.id).single();
     if (error) { if (status) status.textContent = error.message; return; }
     if (nameInput) nameInput.value = profile?.display_name || user.user_metadata?.display_name || '';
     if (emailInput) emailInput.value = user.email || profile?.email || '';
@@ -660,6 +763,42 @@ const PulsePlateApp = (() => {
       $('#feedbackMessage').value = '';
       feedbackStatus.textContent = 'Thanks! Your feedback was submitted.';
     });
+
+    const isAdmin = profile?.is_admin === true;
+    $$('[data-admin-only]').forEach(el => { el.hidden = !isAdmin; });
+    const tabs = $$('[data-settings-tab]');
+    const sections = $$('[data-settings-section]');
+    const showTab = async tab => {
+      if (tab === 'feedback-inbox' && !isAdmin) return;
+      tabs.forEach(b => b.classList.toggle('active', b.dataset.settingsTab === tab));
+      sections.forEach(sec => { sec.hidden = sec.dataset.settingsSection !== tab; });
+      if (tab === 'feedback-inbox') await loadFeedbackInbox();
+    };
+    tabs.forEach(b => b.onclick = () => showTab(b.dataset.settingsTab));
+
+    async function loadFeedbackInbox(){
+      const box = $('[data-feedback-inbox]'); const inboxStatus = $('[data-feedback-inbox-status]');
+      if (!box) return; inboxStatus.textContent = 'Loading feedback…';
+      const { data, error } = await supabase.from('feedback').select('id,user_id,category,message,created_at,read_at,profiles!feedback_user_id_profiles_fkey(display_name,email)').order('created_at',{ascending:false});
+      if (error) { inboxStatus.textContent = error.message; return; }
+      const unread = (data||[]).filter(x => !x.read_at).length;
+      $$('[data-feedback-unread-count]').forEach(b => { b.hidden = unread === 0; b.textContent = unread; });
+      box.innerHTML = (data||[]).length ? data.map(item => `
+        <article class="feedback-item ${item.read_at ? '' : 'unread'}" data-feedback-id="${item.id}">
+          <div class="feedback-item-head"><strong>${escapeHtml(item.category)}</strong><span>${new Date(item.created_at).toLocaleString()}</span></div>
+          <div class="feedback-author">${escapeHtml(item.profiles?.display_name || 'Unknown user')} · ${escapeHtml(item.profiles?.email || '')}</div>
+          <p>${escapeHtml(item.message)}</p>
+          <div class="feedback-actions"><button class="ghost-button" type="button" data-mark-feedback-read="${item.id}" ${item.read_at ? 'disabled' : ''}>Mark as read</button><button class="ghost-button danger-button" type="button" data-delete-feedback="${item.id}">Delete</button></div>
+        </article>`).join('') : '<p class="empty-state">No feedback has been submitted yet.</p>';
+      inboxStatus.textContent = '';
+      box.querySelectorAll('[data-mark-feedback-read]').forEach(b => b.onclick = async () => { await supabase.from('feedback').update({read_at:new Date().toISOString()}).eq('id',b.dataset.markFeedbackRead); await loadFeedbackInbox(); });
+      box.querySelectorAll('[data-delete-feedback]').forEach(b => b.onclick = async () => { if (!confirm('Delete this feedback permanently?')) return; const {error}=await supabase.from('feedback').delete().eq('id',b.dataset.deleteFeedback); if(error) { inboxStatus.textContent=error.message; return; } await loadFeedbackInbox(); });
+    }
+    $('[data-refresh-feedback]')?.addEventListener('click', loadFeedbackInbox);
+    if (isAdmin) {
+      const { count } = await supabase.from('feedback').select('*',{count:'exact',head:true}).is('read_at',null);
+      $$('[data-feedback-unread-count]').forEach(b => { b.hidden = !(count||0); b.textContent = count||0; });
+    }
   }
 
   async function renderAccount(){
@@ -698,6 +837,24 @@ const PulsePlateApp = (() => {
     $('#primaryGoal').value=profile?.primary_goal || 'health';
     $('[data-current-weight]').textContent=goals.current_weight ? moneyless(goals.current_weight) : '—';
     $('[data-goal-weight]').textContent=goals.goal_weight ? moneyless(goals.goal_weight) : '—';
+
+    const autoStatus=$('[data-auto-macro-status]');
+    const autoButton=$('[data-auto-calculate]');
+    const updateAutoState=()=>{
+      const goal=$('#primaryGoal').value;
+      const weight=Number($('#currentWeight').value);
+      const supported=['lose','maintain','gain'].includes(goal);
+      const configured=supported && autoMacroRulesConfigured(goal);
+      if(autoButton) autoButton.disabled=false;
+      if(autoStatus) autoStatus.textContent='Automatic macro calculation is not yet available. It is coming at a later date.';
+    };
+    ['#currentWeight','#primaryGoal'].forEach(selector=>$(selector)?.addEventListener('input',updateAutoState));
+    updateAutoState();
+
+    autoButton?.addEventListener('click',()=>{
+      if(autoStatus) autoStatus.textContent='Automatic macro calculation is not yet available. It is coming at a later date.';
+    });
+
     const button=$('.two-column-grid .panel .primary-button');
     if(button){button.onclick=async()=>{
       const payload={user_id:user.id,calorie_goal:Number($('#calgoal').value)||2050,protein_goal:Number($('#proteinGoal').value)||0,carbs_goal:Number($('#carbsGoal').value)||0,fat_goal:Number($('#fatGoal').value)||0,current_weight:Number($('#currentWeight').value)||null,goal_weight:Number($('#goalWeight').value)||null};
@@ -709,11 +866,78 @@ const PulsePlateApp = (() => {
   }
 
   async function renderProgress(){
-    const entries=await getEntries(); const totals=totalsFor(entries); const goals=await getGoals();
-    setText('[data-progress-items]', entries.length);
-    setText('[data-progress-calories]', Math.round(totals.calories).toLocaleString());
-    setWidth('[data-progress-bar]', totals.calories/goals.calorie_goal*100);
-    setText('.card-note', `Today: ${Math.round(totals.calories).toLocaleString()} of ${goals.calorie_goal.toLocaleString()} calories logged.`);
+    const { data: allEntries, error: entryError } = await supabase.from('food_entries').select('logged_date').eq('user_id', user.id).order('logged_date', {ascending:true});
+    if(entryError) throw entryError;
+    const dates=[...new Set((allEntries||[]).map(e=>e.logged_date).filter(Boolean))].sort();
+    const dateSet=new Set(dates);
+    let current=0, longest=0, run=0, previous=null;
+    for(const d of dates){
+      const cur=new Date(`${d}T00:00:00`);
+      if(previous && Math.round((cur-previous)/86400000)===1) run++; else run=1;
+      current=run; longest=Math.max(longest,run); previous=cur;
+    }
+    setText('[data-current-streak]', current);
+    setText('[data-longest-streak]', longest);
+    setText('[data-days-logged]', dates.length);
+    renderActivity(dates, dateSet);
+
+    const {data:weights,error:weightError}=await supabase.from('weight_logs').select('*').eq('user_id',user.id).order('logged_date',{ascending:true}).order('created_at',{ascending:true});
+    if(weightError) throw weightError;
+    renderWeightProgress(weights||[]);
+
+    const {data:measurements,error:measurementError}=await supabase.from('body_measurements').select('*').eq('user_id',user.id).order('logged_date',{ascending:false}).order('created_at',{ascending:false});
+    if(measurementError) throw measurementError;
+    renderMeasurements(measurements||[]);
+
+    $('[data-add-weight]')?.addEventListener('click', openWeightModal);
+    $('[data-add-measurement]')?.addEventListener('click', openMeasurementModal);
+  }
+
+  function renderActivity(dates,dateSet){
+    const grid=$('[data-activity-grid]'); if(!grid) return;
+    const today=new Date(); today.setHours(0,0,0,0);
+    const start=addDays(today,-27);
+    const days=[];
+    for(let i=0;i<28;i++){const d=addDays(start,i);const key=dateKey(d);days.push(`<div class="activity-day ${dateSet.has(key)?'logged':''}" title="${d.toLocaleDateString(undefined,{month:'short',day:'numeric'})}"><span></span><small>${d.getDate()}</small></div>`);}
+    grid.innerHTML=days.join('');
+  }
+
+  function renderWeightProgress(weights){
+    const chart=$('[data-weight-chart]');
+    if(!weights.length){
+      setText('[data-current-progress-weight]','—'); setText('[data-weight-change]','Log a weight to start your history.'); setText('[data-start-weight]','—'); setText('[data-weight-change-total]','—'); setText('[data-lowest-weight]','—');
+      if(chart) chart.innerHTML='<p class="page-copy">No weight history yet. Log your first weight above.</p>';
+      return;
+    }
+    const first=Number(weights[0].weight), last=Number(weights[weights.length-1].weight), lowest=Math.min(...weights.map(w=>Number(w.weight))), change=last-first;
+    setText('[data-current-progress-weight]',`${moneyless(last)} lb`); setText('[data-weight-change]',`${change===0?'No change':`${change>0?'+':''}${moneyless(change)} lb`} since first logged weight.`); setText('[data-start-weight]',`${moneyless(first)} lb`); setText('[data-weight-change-total]',`${change>0?'+':''}${moneyless(change)} lb`); setText('[data-lowest-weight]',`${moneyless(lowest)} lb`);
+    if(!chart) return;
+    const width=760,height=260,pad=38,vals=weights.map(w=>Number(w.weight)),min=Math.min(...vals),max=Math.max(...vals),range=Math.max(max-min,1);
+    const points=weights.map((w,i)=>{const x=pad+(i/(Math.max(weights.length-1,1)))*(width-pad*2);const y=pad+((max-Number(w.weight))/range)*(height-pad*2);return {x,y,w};});
+    const poly=points.map(p=>`${p.x},${p.y}`).join(' ');
+    chart.innerHTML=`<svg class="weight-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Weight history"><line x1="${pad}" y1="${height-pad}" x2="${width-pad}" y2="${height-pad}" class="chart-axis"/><polyline points="${poly}" class="weight-line" fill="none"/>${points.map(p=>`<circle cx="${p.x}" cy="${p.y}" r="4" class="weight-point"><title>${moneyless(p.w.weight)} lb · ${p.w.logged_date}</title></circle>`).join('')}<text x="${pad}" y="${height-8}" class="chart-label">${weights[0].logged_date}</text><text x="${width-pad}" y="${height-8}" text-anchor="end" class="chart-label">${weights[weights.length-1].logged_date}</text><text x="${pad}" y="18" class="chart-label">${moneyless(max)} lb</text><text x="${pad}" y="${height-28}" class="chart-label">${moneyless(min)} lb</text></svg>`;
+    const history=$('[data-weight-history]'); if(history) { history.innerHTML=weights.slice().reverse().map(w=>`<div class="history-row"><div><strong>${moneyless(w.weight)} lb</strong><span>${w.logged_date}</span></div><button class="text-button danger-button" type="button" data-delete-weight="${w.id}">Delete</button></div>`).join(''); history.querySelectorAll('[data-delete-weight]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this weight entry permanently?'))return;const {error}=await supabase.from('weight_logs').delete().eq('id',b.dataset.deleteWeight).eq('user_id',user.id);if(error)return alert(error.message);await renderProgress();}); }
+  }
+
+  function renderMeasurements(rows){
+    const list=$('[data-measurement-list]'); if(!list) return;
+    const latest=new Map(); rows.forEach(r=>{if(!latest.has(r.measurement_type)) latest.set(r.measurement_type,r);});
+    const order=['Waist','Hips','Chest','Left arm','Right arm','Left thigh','Right thigh','Neck'];
+    const keys=[...order.filter(k=>latest.has(k)),...Array.from(latest.keys()).filter(k=>!order.includes(k))];
+    list.innerHTML=keys.length?keys.map(k=>{const r=latest.get(k);return `<article class="measurement-card"><div><strong>${escapeHtml(k)}</strong><span>${moneyless(r.value)} ${r.unit}</span></div><small>${r.logged_date}</small><div class="measurement-actions"><button type="button" class="text-button" data-measurement-history="${escapeHtml(k)}">History</button><button type="button" class="text-button danger-button" data-delete-measurement="${r.id}">Delete latest</button></div></article>`}).join(''):'<p class="page-copy">No measurements logged yet.</p>';
+    list.querySelectorAll('[data-measurement-history]').forEach(b=>b.onclick=()=>showMeasurementHistory(b.dataset.measurementHistory,rows)); list.querySelectorAll('[data-delete-measurement]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this measurement entry permanently?'))return;const {error}=await supabase.from('body_measurements').delete().eq('id',b.dataset.deleteMeasurement).eq('user_id',user.id);if(error)return alert(error.message);await renderProgress();});
+  }
+
+  function openWeightModal(){
+    const overlay=document.createElement('div'); overlay.className='modal-overlay'; overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Weight</p><h2>Log weight</h2><div class="field"><label>Weight (lb)</label><input id="progressWeightInput" type="number" min="1" step="0.1" autofocus></div><div class="field"><label>Date</label><input id="progressWeightDate" type="date" value="${dateKey(new Date())}"></div><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-save-weight type="button">Save</button></div></section>`; document.body.appendChild(overlay); overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove()); overlay.querySelector('[data-save-weight]').onclick=async()=>{const weight=Number(overlay.querySelector('#progressWeightInput').value),logged_date=overlay.querySelector('#progressWeightDate').value;if(!weight||!logged_date)return alert('Enter a valid weight and date.');const {error}=await supabase.from('weight_logs').insert({user_id:user.id,weight,logged_date});if(error)return alert(error.message);overlay.remove();await renderProgress();};
+  }
+
+  function openMeasurementModal(){
+    const overlay=document.createElement('div'); overlay.className='modal-overlay'; overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Measurements</p><h2>Add measurement</h2><div class="form-grid"><div class="field"><label>Measurement</label><select id="measurementType"><option>Waist</option><option>Hips</option><option>Chest</option><option>Left arm</option><option>Right arm</option><option>Left thigh</option><option>Right thigh</option><option>Neck</option><option>Custom</option></select></div><div class="field"><label>Value</label><input id="measurementValue" type="number" min="0.1" step="0.1"></div><div class="field"><label>Unit</label><select id="measurementUnit"><option value="in">inches</option><option value="cm">centimeters</option></select></div><div class="field"><label>Date</label><input id="measurementDate" type="date" value="${dateKey(new Date())}"></div></div><div class="field" id="customMeasurementWrap" hidden><label>Custom name</label><input id="customMeasurementName" maxlength="40"></div><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-save-measurement type="button">Save</button></div></section>`; document.body.appendChild(overlay); overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove()); const type=overlay.querySelector('#measurementType'), custom=overlay.querySelector('#customMeasurementWrap'); type.onchange=()=>custom.hidden=type.value!=='Custom'; overlay.querySelector('[data-save-measurement]').onclick=async()=>{const measurement_type=type.value==='Custom'?overlay.querySelector('#customMeasurementName').value.trim():type.value;const value=Number(overlay.querySelector('#measurementValue').value),unit=overlay.querySelector('#measurementUnit').value,logged_date=overlay.querySelector('#measurementDate').value;if(!measurement_type||!value||!logged_date)return alert('Complete the measurement fields.');const {error}=await supabase.from('body_measurements').insert({user_id:user.id,measurement_type,value,unit,logged_date});if(error)return alert(error.message);overlay.remove();await renderProgress();};
+  }
+
+  function showMeasurementHistory(name,rows){
+    const history=rows.filter(r=>r.measurement_type===name).sort((a,b)=>String(b.logged_date).localeCompare(String(a.logged_date))); const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Measurement history</p><h2>${escapeHtml(name)}</h2><div class="history-list">${history.map(r=>`<div class="history-row"><div><strong>${moneyless(r.value)} ${r.unit}</strong><span>${r.logged_date}</span></div><button class="text-button danger-button" type="button" data-delete-history-measurement="${r.id}">Delete</button></div>`).join('')}</div></section>`;document.body.appendChild(overlay);overlay.querySelector('[data-close]').onclick=()=>overlay.remove(); overlay.querySelectorAll('[data-delete-history-measurement]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this measurement entry permanently?'))return;const {error}=await supabase.from('body_measurements').delete().eq('id',b.dataset.deleteHistoryMeasurement).eq('user_id',user.id);if(error)return alert(error.message);overlay.remove();await renderProgress();});
   }
 
   async function renderRecipes(){

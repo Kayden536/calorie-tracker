@@ -1,45 +1,39 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MacroSync Progress</title>
-    <link rel="stylesheet" href="css/style.css" />
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="js/supabase-client.js" defer></script>
-    <script src="js/app.js" defer></script>
-  </head>
-  <body data-page="progress">
-    <main class="app-shell">
-      <aside class="sidebar" aria-label="Primary navigation">
-        <a class="brand" href="index.html"><span class="brand-mark">P</span><span><strong>MacroSync</strong><small>Nutrition planner · Alpha</small></span></a>
-        <nav class="nav-list">
-          <a class="nav-item" href="index.html"><span>H</span>Dashboard</a>
-          <a class="nav-item" href="log_food.html"><span>+</span>Log food</a>
-          <a class="nav-item active" href="progress.html"><span>O</span>Progress</a>
-          <a class="nav-item" href="recipes.html"><span>=</span>Recipes</a>
-          <a class="nav-item" href="social.html"><span>@</span>Friends</a>
-          <a class="nav-item" href="account.html"><span>A</span>Account</a>
-          <a class="nav-item" href="goals.html"><span>*</span>Goals</a>
-        </nav>
-      </aside>
-      <section class="workspace">
-        <header class="topbar">
-          <div><p class="eyebrow">Trends</p><h1>Progress</h1><p class="page-copy">Your saved nutrition activity and trends. More detailed history charts are planned for a later alpha milestone.</p></div>
-        </header>
-        <section class="summary-grid">
-          <article class="goal-card"><p class="eyebrow">Food diary</p><div class="weight-row"><span><strong data-progress-items>0</strong>Items today</span><span><strong data-progress-calories>0</strong>Calories</span></div><div class="progress-track"><span data-progress-bar style="width: 0%"></span></div><p class="card-note">Your saved food entries will appear here.</p></article>
-          <article class="goal-card"><p class="eyebrow">Calories</p><div class="weight-row"><span><strong>1,890</strong>Average</span><span><strong>5 / 7</strong>On target</span></div><div class="progress-track"><span style="width: 71%"></span></div><p class="card-note">Weekly target adherence</p></article>
-        </section>
-        <section class="two-column-grid">
-          <section class="panel"><div class="panel-header"><div><p class="eyebrow">Week view</p><h2>Calories logged</h2></div></div><div class="chart-bars"><p class="page-copy">Detailed weekly charts are coming in the next alpha milestone.</p></div></section>
-          <section class="panel"><div class="panel-header"><div><p class="eyebrow">Milestones</p><h2>Timeline</h2></div></div><article class="timeline-item"><h3>Alpha tracking</h3><p>Food diary history is now stored to your account.</p></article><article class="timeline-item"><h3>More analytics coming</h3><p>Weekly trends and milestones are planned for a later release.</p></article></section>
-        </section>
-      </section>
-      <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a class="active" href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><a href="account.html"><span>A</span>Account</a></nav>
-    </main>
-  </body>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MacroSync Progress</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="js/supabase-client.js" defer></script>
+  <script src="js/app.js" defer></script>
+</head>
+<body data-page="progress">
+<main class="app-shell">
+  <aside class="sidebar" aria-label="Primary navigation">
+    <a class="brand" href="index.html"><span class="brand-mark">P</span><span><strong>MacroSync</strong><small>Nutrition planner · Alpha</small></span></a>
+    <nav class="nav-list">
+      <a class="nav-item" href="index.html"><span>H</span>Dashboard</a><a class="nav-item" href="log_food.html"><span>+</span>Log food</a><a class="nav-item active" href="progress.html"><span>O</span>Progress</a><a class="nav-item" href="recipes.html"><span>=</span>Recipes</a><a class="nav-item" href="social.html"><span>@</span>Friends</a><a class="nav-item" href="settings.html"><span>A</span>Settings</a><a class="nav-item" href="goals.html"><span>*</span>Goals</a>
+    </nav>
+  </aside>
+  <section class="workspace">
+    <header class="topbar"><div><p class="eyebrow">Your progress</p><h1>Progress</h1><p class="page-copy">Track your weight, logging streak, and personal measurements over time.</p></div></header>
+
+    <section class="summary-grid">
+      <article class="goal-card"><p class="eyebrow">Current weight</p><div class="stat-number" data-current-progress-weight>—</div><p class="card-note" data-weight-change>Log a weight to start your history.</p></article>
+      <article class="goal-card"><p class="eyebrow">Logging streak</p><div class="stat-number"><span data-current-streak>0</span> days</div><p class="card-note">Consecutive days with food logged.</p></article>
+      <article class="goal-card"><p class="eyebrow">Longest streak</p><div class="stat-number"><span data-longest-streak>0</span> days</div><p class="card-note">Your best logging streak so far.</p></article>
+      <article class="goal-card"><p class="eyebrow">Days logged</p><div class="stat-number"><span data-days-logged>0</span></div><p class="card-note">Unique days with food entries.</p></article>
+    </section>
+
+    <section class="panel progress-panel"><div class="panel-header"><div><p class="eyebrow">Weight</p><h2>Weight progress</h2></div><button class="primary-button" type="button" data-add-weight>Log weight</button></div><div class="progress-chart" data-weight-chart><p class="page-copy">No weight history yet. Log your first weight above.</p></div><div class="weight-summary-row"><span><strong data-start-weight>—</strong><small>Starting</small></span><span><strong data-weight-change-total>—</strong><small>Change</small></span><span><strong data-lowest-weight>—</strong><small>Lowest</small></span></div><div class="history-list" data-weight-history></div></section>
+
+    <section class="panel progress-panel"><div class="panel-header"><div><p class="eyebrow">Activity</p><h2>Recent logging</h2></div></div><div class="activity-grid" data-activity-grid></div></section>
+
+    <section class="panel progress-panel"><div class="panel-header"><div><p class="eyebrow">Measurements</p><h2>Body measurements</h2><p class="page-copy">Track personal measurements in inches or centimeters.</p></div><button class="primary-button" type="button" data-add-measurement>Add measurement</button></div><div class="measurement-list" data-measurement-list><p class="page-copy">No measurements logged yet.</p></div></section>
+  </section>
+  <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a class="active" href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><a href="goals.html"><span>*</span>Goals</a></nav>
+</main>
+</body>
 </html>
-
-
-

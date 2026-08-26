@@ -27,36 +27,47 @@
         <div><p class="eyebrow">Preferences</p><h1>Settings</h1><p class="page-copy">Manage your MacroSync account and send feedback.</p></div>
       </header>
       <div class="content-grid settings-page-grid">
-        <section class="panel">
-          <div class="panel-header"><div><p class="eyebrow">Account</p><h2>Account settings</h2></div><span class="role-badge" id="settingsRole">Loading…</span></div>
+        <aside class="panel settings-nav-panel">
+          <p class="eyebrow">Settings</p>
+          <div class="settings-subnav">
+            <button class="active" type="button" data-settings-tab="account">Settings</button>
+            <button type="button" data-settings-tab="feedback">Send feedback</button>
+            <button type="button" data-settings-tab="feedback-inbox" data-admin-only hidden>Feedback inbox <span class="feedback-badge" data-feedback-unread-count hidden>0</span></button>
+          </div>
+        </aside>
+        <section class="panel settings-section" data-settings-section="account">
+          <div class="panel-header"><div><p class="eyebrow">Settings</p><h2>Account settings</h2></div><span class="role-badge" id="settingsRole">Loading…</span></div>
           <form class="settings-stack" data-settings-profile-form>
             <div class="field"><label for="settingsDisplayName">Display name</label><input id="settingsDisplayName" maxlength="80" required /></div>
             <button class="primary-button" type="submit">Save display name</button>
           </form>
           <form class="settings-stack settings-divider" data-settings-email-form>
             <div class="field"><label for="settingsEmail">Email address</label><input id="settingsEmail" type="email" required /></div>
-            <button class="ghost-button" type="submit">Change email</button>
+            <button class="ghost-button" type="submit">Update email</button>
           </form>
           <form class="settings-stack settings-divider" data-settings-password-form>
             <div class="field"><label for="settingsPassword">New password</label><input id="settingsPassword" type="password" minlength="8" autocomplete="new-password" required /></div>
             <div class="field"><label for="settingsPasswordConfirm">Confirm new password</label><input id="settingsPasswordConfirm" type="password" minlength="8" autocomplete="new-password" required /></div>
-            <button class="ghost-button" type="submit">Change password</button>
+            <button class="ghost-button" type="submit">Update password</button>
           </form>
           <p class="settings-status" data-settings-status role="status"></p>
         </section>
-        <section class="panel">
+        <section class="panel settings-section" data-settings-section="feedback" hidden>
           <div class="panel-header"><div><p class="eyebrow">Feedback</p><h2>Tell us what you think</h2></div></div>
-          <p class="page-copy">Report a problem, suggest a feature, or tell us how MacroSync could be better.</p>
           <form class="settings-stack" data-feedback-form>
             <div class="field"><label for="feedbackCategory">Type</label><select id="feedbackCategory"><option value="general">General feedback</option><option value="bug">Bug report</option><option value="feature">Feature request</option><option value="other">Other</option></select></div>
             <div class="field"><label for="feedbackMessage">Feedback</label><textarea id="feedbackMessage" rows="8" maxlength="4000" placeholder="Tell us what happened or what you would like to see…" required></textarea></div>
-            <button class="primary-button" type="submit">Send feedback</button>
-            <p class="settings-status" data-feedback-status role="status"></p>
+            <button class="primary-button" type="submit">Send feedback</button><p class="settings-status" data-feedback-status role="status"></p>
           </form>
         </section>
+        <section class="panel settings-section" data-settings-section="feedback-inbox" hidden data-admin-only>
+          <div class="panel-header"><div><p class="eyebrow">Administration</p><h2>Feedback inbox</h2><p class="page-copy">New submissions appear first. Opened items are marked as read.</p></div><button class="ghost-button" type="button" data-refresh-feedback>Refresh</button></div>
+          <div class="feedback-inbox" data-feedback-inbox></div>
+          <p class="settings-status" data-feedback-inbox-status></p>
+        </section>
       </div>
-      <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><a class="active" href="settings.html"><span>⚙</span>Settings</a></nav>
     </main>
+    <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><a class="active" href="goals.html"><span>*</span>Goals</a></nav>
   </div>
 </body>
 </html>
