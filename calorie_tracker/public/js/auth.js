@@ -149,6 +149,16 @@
       const address = email.value.trim();
       const pass = password.value;
       const name = displayName.value.trim() || 'MacroSync User';
+      if (mode === 'signup') {
+        const blocked = ['fuck','fucker','fucking','shit','shitter','bitch','bitches','asshole','bastard','cunt','dick','pussy','cock','slut','whore','porn','pornography','nude','nudes','naked','sex','sexual','sexy','onlyfans','rape','rapist','pedo','pedophile','groomer','kill','kys','nazi','slur'];
+        const normalizedName = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const tokenName = name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        if (!name) throw new Error('Please enter a display name.');
+        if (name.length > 80) throw new Error('Display names must be 80 characters or fewer.');
+        if (blocked.some(term => tokenName.split(/\s+/).includes(term) || normalizedName === term || normalizedName.includes(term))) {
+          throw new Error('That display name contains language or content that is not allowed.');
+        }
+      }
       let result;
 
       if (mode === 'signup') {

@@ -33,10 +33,15 @@
         <section class="two-column-grid">
           <section class="panel">
             <div class="panel-header"><div><p class="eyebrow">Existing foods</p><h2>Add food</h2></div></div>
-            <div class="field"><label for="foodSearch">Search the food database</label><input id="foodSearch" data-food-search placeholder="Search chicken, oats, yogurt..." autocomplete="off" /></div>
+            <div class="field"><label for="foodSearch">Search foods</label><input id="foodSearch" data-food-search placeholder="Search chicken, oats, yogurt..." autocomplete="off" /></div>
+            <div class="food-source-tabs" role="tablist" aria-label="Food source"><button class="food-source-tab active" type="button" data-food-source="usda">USDA Foods</button><button class="food-source-tab" type="button" data-food-source="community">Community Foods</button></div>
+            <p class="page-copy" data-food-source-hint>USDA FoodData Central results with nutrition verification.</p>
             <div class="food-database-list" data-food-database-list><p class="page-copy">Search for a food to get started.</p></div>
             <div class="panel-divider"></div>
-            <div class="panel-header compact"><div><p class="eyebrow">Your database</p><h2>My Foods</h2></div><button class="ghost-button" type="button" data-manual-toggle>+ Create Manual Food</button></div>
+            <div class="panel-header compact"><div><p class="eyebrow">Community database</p><h2>Add a food</h2></div><button class="ghost-button" type="button" data-community-toggle>+ Add Community Food</button></div>
+            <p class="manual-note">Community foods are created by users. You can define easy units such as 1 egg, 1 slice, or 1 cup, with the weight of that unit for accurate scaling.</p>
+            <div class="panel-divider"></div>
+            <div class="panel-header compact"><div><p class="eyebrow">Your private database</p><h2>My Foods</h2></div><button class="ghost-button" type="button" data-manual-toggle>+ Create Manual Food</button></div>
             <div class="food-database-list" data-personal-food-list><p class="page-copy">You have not created any personal foods yet.</p></div>
             <p class="manual-note">Selecting an existing food opens a serving window. Changing the amount or serving type automatically recalculates its macros.</p>
           </section>

@@ -17,12 +17,14 @@ const SUPABASE_URL = String(process.env.SUPABASE_URL || "").trim();
 const SUPABASE_PUBLISHABLE_KEY = String(process.env.SUPABASE_PUBLISHABLE_KEY || "").trim();
 
 function nutrientMap(food) {
+  // FoodData Central nutrient records are represented on a 100 g / 100 ml basis.
+  // Keep that basis intact here; serving-size conversion is handled separately.
   const values = { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sugar: 0, sodium: 0 };
   for (const nutrient of food.foodNutrients || []) {
     const name = String(nutrient.nutrientName || nutrient.name || "").toLowerCase();
     const unit = String(nutrient.unitName || nutrient.unit || "").toLowerCase();
     const amount = Number(nutrient.value ?? nutrient.amount ?? 0);
-    if (!Number.isFinite(amount)) continue;
+    if (!Number.isFinite(amount) || amount < 0) continue;
     if (name.includes("energy") && (unit === "kcal" || name.includes("kcal"))) values.calories = amount;
     else if (name === "protein") values.protein = amount;
     else if (name.includes("carbohydrate")) values.carbs = amount;
@@ -32,6 +34,41 @@ function nutrientMap(food) {
     else if (name.includes("sodium")) values.sodium = amount;
   }
   return values;
+}
+
+function verifyNutrition(nutrients) {
+  const warnings = [];
+  const errors = [];
+  const values = [nutrients.calories, nutrients.protein, nutrients.carbs, nutrients.fat];
+  if (!values.every(Number.isFinite)) errors.push("One or more nutrient values is not numeric.");
+  if (values.some(v => v < 0)) errors.push("Negative nutrient values are not valid.");
+
+  // A gram of food cannot contain more than 100 g of any macronutrient.
+  for (const [name, value] of [["protein", nutrients.protein], ["carbs", nutrients.carbs], ["fat", nutrients.fat]]) {
+    if (value > 100.01) errors.push(`${name} exceeds 100 g per 100 g of food.`);
+  }
+
+  // Protein/carbohydrate/fat are components of the food's mass. Allow a tiny
+  // rounding margin, but reject mathematically impossible combinations.
+  if (nutrients.protein + nutrients.carbs + nutrients.fat > 100.5) {
+    errors.push("Protein, carbohydrate, and fat exceed the food's total mass.");
+  }
+
+  // Calorie/macronutrient comparison is a warning rather than a hard rejection:
+  // fiber, alcohol, organic acids, rounding, and USDA calculation methods can
+  // make the simple 4/4/9 estimate differ from reported energy.
+  const macroCalories = nutrients.protein * 4 + nutrients.carbs * 4 + nutrients.fat * 9;
+  if (nutrients.calories > 0 && macroCalories > 0) {
+    const relativeDifference = Math.abs(macroCalories - nutrients.calories) / nutrients.calories;
+    if (relativeDifference > 0.35) warnings.push("Reported calories differ substantially from calories estimated from macros.");
+  }
+
+  return {
+    verified: errors.length === 0,
+    warnings,
+    errors,
+    basis: "per 100 g"
+  };
 }
 
 app.get("/api/config", (_req, res) => {
@@ -85,18 +122,22 @@ app.get("/api/foods/search", async (req, res) => {
     try { data = JSON.parse(responseText); }
     catch { return res.status(502).json({ error: "USDA returned invalid JSON." }); }
 
-    const foods = Array.isArray(data.foods) ? data.foods.map(food => ({
-      id: food.fdcId,
-      name: food.description || "Unknown food",
-      brand: food.brandOwner || food.brandName || "",
-      dataType: food.dataType || "",
-      servingSize: food.servingSize || null,
-      servingUnit: food.servingSizeUnit || "",
-      householdServing: food.householdServingFullText || "",
-      nutrients: nutrientMap(food)
-    })) : [];
+    const foods = Array.isArray(data.foods) ? data.foods.map(food => {
+      const nutrients = nutrientMap(food);
+      return {
+        id: food.fdcId,
+        name: food.description || "Unknown food",
+        brand: food.brandOwner || food.brandName || "",
+        dataType: food.dataType || "",
+        servingSize: food.servingSize || null,
+        servingUnit: food.servingSizeUnit || "",
+        householdServing: food.householdServingFullText || "",
+        nutrients,
+        nutritionVerification: verifyNutrition(nutrients)
+      };
+    }).filter(food => food.nutritionVerification.verified) : [];
 
-    res.json({ foods, totalHits: Number(data.totalHits) || 0 });
+    res.json({ foods, totalHits: Number(data.totalHits) || 0, verification: { rejectedInvalidRecords: (Array.isArray(data.foods) ? data.foods.length : 0) - foods.length } });
   } catch (error) {
     console.error("USDA request failed:", error);
     res.status(502).json({ error: "Unable to reach the USDA food database right now." });

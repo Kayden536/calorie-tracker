@@ -57,6 +57,58 @@ const PulsePlateApp = (() => {
   const addDays = (date, amount) => { const d = new Date(date); d.setDate(d.getDate()+amount); return d; };
   const moneyless = (n) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 1 });
   const formatDate = (date) => date.toLocaleDateString(undefined, { weekday:'long', month:'long', day:'numeric' });
+  // Display names are intentionally stricter than ordinary messages.  Keep this
+  // list focused on clearly abusive, sexual, or otherwise inappropriate terms.
+  // The database trigger is the final enforcement layer; this provides instant UI feedback.
+  const BLOCKED_NAME_TERMS = [
+    'fuck','fucker','fucking','shit','shitter','bitch','bitches','asshole','bastard','cunt',
+    'dick','pussy','cock','slut','whore','porn','pornography','nude','nudes','naked','sex',
+    'sexual','sexy','onlyfans','rape','rapist','pedo','pedophile','groomer','kill','kys','nazi',
+    'slur'
+  ];
+  const BLOCKED_MESSAGE_TERMS = ['porn','pornography','nude','nudes','sexually explicit','sexual services','child sexual','minor sexual'];
+  // Hate/discrimination filter. Normalization catches common punctuation/spacing evasion.
+  const BLOCKED_HATE_TERMS = [
+    'nigger','niggers','nigga','niggas','chink','chinks','spic','spics','kike','kikes',
+    'gook','gooks','wetback','wetbacks','beaner','beaners','raghead','ragheads','coon','coons',
+    'fag','fags','faggot','faggots','dyke','dykes','tranny','trannies'
+  ];
+  function normalizedModerationText(text) {
+    return String(text || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+  }
+  function containsHateTerm(text) {
+    const lower = String(text || '').toLowerCase();
+    const normalized = normalizedModerationText(text);
+    return BLOCKED_HATE_TERMS.some(term => lower.split(/[^a-z0-9]+/).includes(term) || normalized.includes(term));
+  }
+  const DOXXING_PATTERNS = [
+    /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,
+    /\b(?:[0-9a-f]{1,4}:){2,}[0-9a-f]{1,4}\b/gi,
+    /\b\d{1,5}\s+[A-Za-z0-9.'-]+\s+(?:street|st|road|rd|avenue|ave|boulevard|blvd|drive|dr|lane|ln|court|ct|way|parkway|pkwy|place|pl)\b/gi,
+    /\b(?:\+?\d[\d\s().-]{7,}\d)\b/g,
+    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi
+  ];
+  function validateDisplayName(text) {
+    const value = String(text || '').trim();
+    if (!value) return 'Please enter a display name.';
+    if (value.length > 80) return 'Display names must be 80 characters or fewer.';
+    const lower=value.toLowerCase();
+    const normalized = lower.replace(/[^a-z0-9]/g, '');
+    if (BLOCKED_NAME_TERMS.some(term => lower.includes(term) || normalized.includes(term)) || containsHateTerm(value)) return 'That display name contains language or content that is not allowed.';
+    if (DOXXING_PATTERNS.some(rx => rx.test(value))) return 'Display names cannot contain contact or location information.';
+    DOXXING_PATTERNS.forEach(rx => { rx.lastIndex=0; });
+    return null;
+  }
+  function validateMessageText(text) {
+    const value=String(text||'').trim(); const lower=value.toLowerCase();
+    if (!value) return 'Message cannot be empty.';
+    if (value.length > 4000) return 'Messages must be 4000 characters or fewer.';
+    if (BLOCKED_MESSAGE_TERMS.some(term=>lower.includes(term))) return 'This message contains sexual or otherwise inappropriate content and cannot be sent.';
+    if (containsHateTerm(value)) return 'This message contains hateful or discriminatory language and cannot be sent.';
+    if (DOXXING_PATTERNS.some(rx=>rx.test(value))) { DOXXING_PATTERNS.forEach(rx=>{rx.lastIndex=0;}); return 'This message appears to contain personal information. Please remove IP addresses, home addresses, phone numbers, or email addresses.'; }
+    DOXXING_PATTERNS.forEach(rx=>{rx.lastIndex=0;});
+    return null;
+  }
 
   async function init() {
     try {
@@ -72,6 +124,7 @@ const PulsePlateApp = (() => {
         return;
       }
       await renderPage();
+      await reviewMyContent().catch(error => console.warn('Content moderation review unavailable:', error));
     } catch (error) {
       console.error(error);
       document.body.insertAdjacentHTML('afterbegin', `<div class="alpha-error">MacroSync could not initialize. ${escapeHtml(error.message)}</div>`);
@@ -384,6 +437,29 @@ const PulsePlateApp = (() => {
     wireDateControls();
   }
 
+  async function reviewMyContent() {
+    if (!supabase || !user) return;
+    const { data, error } = await supabase.rpc('review_my_content');
+    if (error || !data?.length) return;
+    const openFlags = data.filter(f => f.status === 'open');
+    if (!openFlags.length) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<section class="modal-card moderation-notice" role="dialog" aria-modal="true" aria-labelledby="moderationNoticeTitle"><p class="eyebrow">Action required</p><h2 id="moderationNoticeTitle">Some of your content needs attention</h2><p class="page-copy">MacroSync found content that may violate its rules about profanity, hateful or discriminatory language, sexual content, or personal information.</p><div class="moderation-items">${openFlags.map(f => `<div class="moderation-item" data-moderation-flag="${f.id}"><strong>${f.content_type === 'display_name' ? 'Display name' : 'Message'}</strong><p>${escapeHtml(f.reason)}</p><div class="modal-actions">${f.content_type === 'display_name' ? '<button type="button" class="primary-button" data-moderation-settings>Change display name</button>' : `<button type="button" class="ghost-button danger-button" data-delete-flagged-message="${f.content_id}">Delete message</button>`}</div></div>`).join('')}</div><div class="modal-actions"><button type="button" class="primary-button" data-close-moderation>Review later</button></div></section>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('[data-close-moderation]')?.addEventListener('click', () => overlay.remove());
+    overlay.querySelector('[data-moderation-settings]')?.addEventListener('click', async () => { overlay.remove(); window.location.href='settings.html'; });
+    overlay.querySelectorAll('[data-delete-flagged-message]').forEach(btn => btn.addEventListener('click', async () => {
+      if (!confirm('Delete this message permanently?')) return;
+      const flag = btn.closest('[data-moderation-flag]');
+      const { error: delError } = await supabase.from('messages').delete().eq('id', btn.dataset.deleteFlaggedMessage).eq('sender_id', user.id);
+      if (delError) { alert(delError.message); return; }
+      await supabase.from('moderation_flags').update({ status:'resolved', resolved_at:new Date().toISOString() }).eq('id', flag.dataset.moderationFlag).eq('user_id', user.id);
+      flag.remove();
+      if (!overlay.querySelector('[data-moderation-flag]')) overlay.remove();
+    }));
+  }
+
   async function getGoals() {
     const { data } = await supabase.from('nutrition_goals').select('*').eq('user_id', user.id).maybeSingle();
     return data || { calorie_goal:2050, protein_goal:147, carbs_goal:230, fat_goal:68, current_weight:null, goal_weight:null };
@@ -523,40 +599,45 @@ const PulsePlateApp = (() => {
     if (!search || !list) return;
 
     await renderPersonalFoods();
-    await renderSavedMeals();
-
-    const run = async () => {
+    let foodSource = 'usda';
+    const sourceButtons = $$('[data-food-source]');
+    const sourceHint = $('[data-food-source-hint]');
+    const setFoodSource = async source => {
+      foodSource = source;
+      sourceButtons.forEach(b => b.classList.toggle('active', b.dataset.foodSource === source));
+      if (sourceHint) sourceHint.textContent = source === 'usda' ? 'USDA FoodData Central results with nutrition verification.' : source === 'community' ? 'Foods published by MacroSync users. These are community-provided, not USDA verified.' : 'Foods you created privately for your own account.';
+      await runFoodSearch();
+    };
+    sourceButtons.forEach(b => b.addEventListener('click', () => setFoodSource(b.dataset.foodSource)));
+    const runFoodSearch = async () => {
       const q = search.value.trim();
+      if (foodSource === 'personal') { await renderPersonalFoods(); return; }
       if (q.length < 2) {
-        list.innerHTML = '<p class="page-copy">Type at least two characters to search USDA FoodData Central.</p>';
+        list.innerHTML = `<p class="page-copy">${foodSource === 'usda' ? 'Type at least two characters to search USDA FoodData Central.' : 'Type at least two characters to search community foods.'}</p>`;
         return;
       }
-      list.innerHTML = '<p class="page-copy">Searching USDA FoodData Central…</p>';
+      list.innerHTML = `<p class="page-copy">Searching ${foodSource === 'usda' ? 'USDA FoodData Central' : 'community foods'}…</p>`;
       try {
+        if (foodSource === 'community') {
+          const {data,error}=await supabase.from('community_foods').select('*').eq('is_public', true).neq('user_id', user.id).ilike('name', `%${q.replace(/[%_]/g,'')}%`).order('name').limit(30);
+          if(error) throw error;
+          const foods=data||[];
+          list.innerHTML=foods.length ? foods.map(communityFoodCard).join('') : '<p class="page-copy">No community foods found. You can create the food and publish it for others.</p>';
+          list.querySelectorAll('[data-community-food-id]').forEach(card=>card.addEventListener('click',()=>{const food=foods.find(f=>String(f.id)===card.dataset.communityFoodId);if(food)openServingModal(food,'community');}));
+          return;
+        }
         const response = await fetch(`/api/foods/search?q=${encodeURIComponent(q)}`);
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Food search failed.');
         const foods = Array.isArray(data.foods) ? data.foods : [];
-        list.innerHTML = foods.length
-          ? `<p class="food-search-count">Showing ${foods.length} result${foods.length === 1 ? '' : 's'}${data.totalHits ? ` of ${Number(data.totalHits).toLocaleString()}` : ''}.</p>${foods.map(foodCard).join('')}`
-          : '<p class="page-copy">No matching foods found. If it is not in the database, use Create Manual Food below.</p>';
-        $$('.food-db-card').forEach(card => card.addEventListener('click', () => {
-          const food = foods.find(f => String(f.id) === card.dataset.id);
-          if (food) openServingModal(food, 'usda');
-        }));
-      } catch (error) {
-        console.error(error);
-        list.innerHTML = `<p class="page-copy">${escapeHtml(error.message)}</p>`;
-      }
+        const rejectedNotice = Number(data.verification?.rejectedInvalidRecords || 0) > 0 ? `<p class="save-status">${Number(data.verification.rejectedInvalidRecords)} USDA result${Number(data.verification.rejectedInvalidRecords) === 1 ? '' : 's'} were hidden because their macro values failed basic physical consistency checks.</p>` : '';
+        list.innerHTML = foods.length ? `${rejectedNotice}<p class="food-search-count">Showing ${foods.length} result${foods.length === 1 ? '' : 's'}${data.totalHits ? ` of ${Number(data.totalHits).toLocaleString()}` : ''}.</p>${foods.map(foodCard).join('')}` : `${rejectedNotice}<p class="page-copy">No matching USDA foods found.</p>`;
+        $$('.food-db-card').forEach(card => card.addEventListener('click', () => { const food = foods.find(f => String(f.id) === card.dataset.id); if (food) openServingModal(food, 'usda'); }));
+      } catch (error) { console.error(error); list.innerHTML = `<p class="page-copy">${escapeHtml(error.message)}</p>`; }
     };
-
-    search.oninput = () => {
-      clearTimeout(searchTimer);
-      searchTimer = setTimeout(run, 350);
-    };
-
+    search.oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(runFoodSearch, 350); };
     $('[data-manual-toggle]')?.addEventListener('click', () => openManualFoodModal());
-    $('[data-save-food]')?.addEventListener('click', saveManualFoodAndLog);
+    $('[data-community-toggle]')?.addEventListener('click', () => openCommunityFoodModal());
     $$('[data-refresh-personal-foods]').forEach(b => b.addEventListener('click', renderPersonalFoods));
     await renderSelectedDateEntries();
   }
@@ -565,10 +646,15 @@ const PulsePlateApp = (() => {
     const n = food.nutrients || {};
     const serving = food.servingSize ? `${moneyless(food.servingSize)}${food.servingUnit ? ` ${escapeHtml(food.servingUnit)}` : ''}` : '100 g';
     const brand = food.brand ? escapeHtml(food.brand) : escapeHtml(food.dataType || 'USDA FoodData Central');
+    const verification = food.nutritionVerification || {};
+    const warning = Array.isArray(verification.warnings) && verification.warnings.length
+      ? `<small class="food-verification-warning">USDA nutrition data has a consistency warning</small>`
+      : `<small class="food-verification-ok">Nutrition values passed basic consistency checks</small>`;
     return `<button type="button" class="food-db-card" data-id="${food.id}">
       <strong>${escapeHtml(food.name)}</strong>
       <p>${brand} · ${serving}</p>
       <div class="macro-row"><span>${moneyless(n.calories)} cal</span><span>${moneyless(n.protein)}g protein</span><span>${moneyless(n.carbs)}g carbs</span><span>${moneyless(n.fat)}g fat</span></div>
+      ${warning}
     </button>`;
   }
 
@@ -578,6 +664,35 @@ const PulsePlateApp = (() => {
       <p>My Food · ${moneyless(food.serving_amount)} ${escapeHtml(food.serving_unit)}</p>
       <div class="macro-row"><span>${moneyless(food.calories)} cal</span><span>${moneyless(food.protein)}g protein</span><span>${moneyless(food.carbs)}g carbs</span><span>${moneyless(food.fat)}g fat</span></div>
     </button>`;
+  }
+
+  function communityFoodCard(food) {
+    return `<button class="food-db-card" type="button" data-community-food-id="${food.id}"><strong>${escapeHtml(food.name)}</strong><p>Community Food · ${escapeHtml(food.serving_options?.[0]?.amount || 1)} ${escapeHtml(food.serving_options?.[0]?.unit || 'serving')}</p><div class="macro-row"><span>${moneyless(food.calories_per_100g)} cal/100g</span><span>${moneyless(food.protein_per_100g)}g protein</span><span>${moneyless(food.carbs_per_100g)}g carbs</span><span>${moneyless(food.fat_per_100g)}g fat</span></div></button>`;
+  }
+
+  async function renderCommunityFoods(query='') {
+    const box=$('[data-community-food-list]'); if(!box)return;
+    let request=supabase.from('community_foods').select('*').eq('is_public', true).neq('user_id', user.id).order('name').limit(30);
+    if(query) request=request.ilike('name', `%${query.replace(/[%_]/g,'')}%`);
+    const {data,error}=await request;
+    if(error){box.innerHTML=`<p class="page-copy">${escapeHtml(error.message)}</p>`;return;}
+    const foods=data||[];
+    box.innerHTML=foods.length?foods.map(communityFoodCard).join(''):'<p class="page-copy">No published community foods yet.</p>';
+    box.querySelectorAll('[data-community-food-id]').forEach(card=>card.addEventListener('click',()=>{const food=foods.find(f=>String(f.id)===card.dataset.communityFoodId);if(food)openServingModal(food,'community');}));
+  }
+
+  function openCommunityFoodModal(){
+    const overlay=document.createElement('div');overlay.className='modal-overlay';
+    overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Community database</p><h2>Add a community food</h2><p class="page-copy">Enter nutrition per 100 g, then optionally define an easy serving such as 1 egg, 1 slice, or 1 cup. Publishing makes it searchable by other MacroSync users.</p><div class="form-grid"><div class="field"><label>Name</label><input data-c-name maxlength="120" placeholder="Egg"></div><div class="field"><label>Calories / 100 g</label><input data-c-cal type="number" min="0" step="0.1"></div><div class="field"><label>Protein / 100 g</label><input data-c-protein type="number" min="0" step="0.1"></div><div class="field"><label>Carbs / 100 g</label><input data-c-carbs type="number" min="0" step="0.1"></div><div class="field"><label>Fat / 100 g</label><input data-c-fat type="number" min="0" step="0.1"></div><div class="field"><label>Easy serving amount</label><input data-c-amount type="number" min="0.01" step="0.01" value="1"></div><div class="field"><label>Easy serving unit</label><input data-c-unit maxlength="40" value="serving" placeholder="egg, slice, cup"></div><div class="field"><label>Serving weight (g)</label><input data-c-grams type="number" min="0.01" step="0.01" value="100"></div></div><label class="toggle-row"><input data-c-publish type="checkbox"><span><strong>Publish to Community Foods</strong><small>Anyone can search published foods. You can delete your own community foods later.</small></span></label><p class="save-status" data-c-status></p><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-c-save type="button">Save food</button></div></section>`;
+    document.body.appendChild(overlay);overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());
+    overlay.querySelector('[data-c-save]').onclick=async()=>{
+      const status=overlay.querySelector('[data-c-status]');const name=overlay.querySelector('[data-c-name]').value.trim();const cal=Number(overlay.querySelector('[data-c-cal]').value),pro=Number(overlay.querySelector('[data-c-protein]').value),carb=Number(overlay.querySelector('[data-c-carbs]').value),fat=Number(overlay.querySelector('[data-c-fat]').value),amount=Number(overlay.querySelector('[data-c-amount]').value),grams=Number(overlay.querySelector('[data-c-grams]').value),unit=overlay.querySelector('[data-c-unit]').value.trim()||'serving';
+      const errorMsg=validateDisplayName(name); if(errorMsg){status.textContent=errorMsg;return;}
+      if([cal,pro,carb,fat,amount,grams].some(v=>!Number.isFinite(v)||v<0)||amount<=0||grams<=0){status.textContent='Enter valid non-negative nutrition values and a positive serving weight.';return;}
+      if(pro+carb+fat>100.5){status.textContent='The macros exceed 100 g per 100 g and cannot be saved.';return;}
+      const row={user_id:user.id,name,calories_per_100g:cal,protein_per_100g:pro,carbs_per_100g:carb,fat_per_100g:fat,serving_options:[{amount,unit,grams}],is_public:overlay.querySelector('[data-c-publish]').checked};
+      const {error}=await supabase.from('community_foods').insert(row);if(error){status.textContent=error.message;return;}overlay.remove(); if (foodSource === 'community') await runFoodSearch();
+    };
   }
 
   async function renderPersonalFoods() {
@@ -613,10 +728,13 @@ const PulsePlateApp = (() => {
   }
 
   function openServingModal(food, source) {
-    const n = source === 'personal' ? { calories:Number(food.calories)||0, protein:Number(food.protein)||0, carbs:Number(food.carbs)||0, fat:Number(food.fat)||0 } : (food.nutrients || {});
-    const baseGrams = source === 'personal' ? (food.serving_unit?.toLowerCase().includes('g') ? Number(food.serving_amount) : 100) : (Number(food.servingSize) || 100);
-    const defaultAmount = source === 'personal' ? Number(food.serving_amount || 1) : Number(food.servingSize || 100);
-    const defaultUnit = source === 'personal' ? (food.serving_unit || 'serving') : (food.servingUnit || 'g');
+    const n = source === 'personal' ? { calories:Number(food.calories)||0, protein:Number(food.protein)||0, carbs:Number(food.carbs)||0, fat:Number(food.fat)||0 } : source === 'community' ? { calories:Number(food.calories_per_100g)||0, protein:Number(food.protein_per_100g)||0, carbs:Number(food.carbs_per_100g)||0, fat:Number(food.fat_per_100g)||0 } : (food.nutrients || {});
+    const communityServing = source === 'community' ? (Array.isArray(food.serving_options) && food.serving_options[0]) : null;
+    const baseGrams = source === 'personal' ? (food.serving_unit?.toLowerCase().includes('g') ? Number(food.serving_amount) : 100) : 100;
+    const usdaServingGrams = source === 'usda' && String(food.servingUnit || '').toLowerCase().includes('g') ? Number(food.servingSize) || 100 : 100;
+    const defaultAmount = source === 'community' ? Number(communityServing?.amount || 1) : source === 'personal' ? Number(food.serving_amount || 1) : Number(food.servingSize || 100);
+    const defaultUnit = source === 'community' ? (communityServing?.unit || 'serving') : source === 'personal' ? (food.serving_unit || 'serving') : (food.servingUnit || 'g');
+    const defaultServingGrams = source === 'community' ? Number(communityServing?.grams || 100) : usdaServingGrams;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `<section class="modal-card serving-modal" role="dialog" aria-modal="true" aria-labelledby="servingTitle">
@@ -624,10 +742,11 @@ const PulsePlateApp = (() => {
       <p class="eyebrow">${source === 'personal' ? 'My Food' : 'USDA Food'}</p><h2 id="servingTitle">${escapeHtml(food.name)}</h2>
       <div class="form-grid serving-controls">
         <div class="field"><label for="servingAmount">Amount</label><input id="servingAmount" type="number" min="0.01" step="0.01" value="${defaultAmount}"></div>
-        <div class="field"><label for="servingUnit">Serving type</label><select id="servingUnit"><option value="serving" ${defaultUnit.toLowerCase().includes('serv')?'selected':''}>serving${source==='usda' && food.householdServing ? ` (${escapeHtml(food.householdServing)})` : ''}</option><option value="g" ${defaultUnit.toLowerCase().includes('g')?'selected':''}>grams</option><option value="oz">ounces</option></select></div>
+        <div class="field"><label for="servingUnit">Serving type</label><select id="servingUnit">${source==='community' ? `<option value="community">${escapeHtml(defaultUnit)}</option>` : `<option value="serving" ${defaultUnit.toLowerCase().includes('serv')?'selected':''}>serving${source==='usda' && food.householdServing ? ` (${escapeHtml(food.householdServing)})` : ''}</option>`}<option value="g" ${defaultUnit.toLowerCase().includes('g')?'selected':''}>grams</option><option value="oz">ounces</option></select></div>
         <div class="field"><label for="servingMeal">Add to meal</label><select id="servingMeal"><option value="Breakfast">Breakfast</option><option value="Lunch">Lunch</option><option value="Dinner">Dinner</option><option value="Snack">Snack</option></select></div>
       </div>
-      <p class="serving-help">Nutrition updates automatically as you change the amount or serving type.</p>
+      <p class="serving-help">Nutrition updates automatically as you change the amount or serving type. USDA values are normalized to a 100 g basis before serving-size conversion.</p>
+      ${(source === 'usda' && food.nutritionVerification?.warnings?.length) ? `<p class="save-status">USDA reports a consistency warning for this food. The record passed the hard validation checks, but the calorie/macro values may differ because of rounding, fiber, or other USDA calculation methods.</p>` : ''}
       <div class="nutrition-summary" data-serving-preview></div>
       <div class="modal-actions"><button class="ghost-button" type="button" data-close-modal>Cancel</button><button class="primary-button" type="button" data-confirm-serving>Add to meal</button></div>
     </section>`;
@@ -643,7 +762,8 @@ const PulsePlateApp = (() => {
       let display = `${moneyless(amount)} ${unit}`;
       if (unit === 'g') multiplier = amount / baseGrams;
       else if (unit === 'oz') multiplier = (amount * 28.3495) / baseGrams;
-      else if (source === 'usda') multiplier = amount * (Number(food.servingSize || 100) / baseGrams);
+      else if (source === 'community') multiplier = (amount * defaultServingGrams) / 100;
+      else if (source === 'usda') multiplier = (amount * usdaServingGrams) / 100;
       else multiplier = amount;
       const values = { calories:Number(n.calories||0)*multiplier, protein:Number(n.protein||0)*multiplier, carbs:Number(n.carbs||0)*multiplier, fat:Number(n.fat||0)*multiplier };
       preview.innerHTML = `<div><strong>${moneyless(values.calories)}</strong><span>Calories</span></div><div><strong>${moneyless(values.protein)}g</strong><span>Protein</span></div><div><strong>${moneyless(values.carbs)}g</strong><span>Carbs</span></div><div><strong>${moneyless(values.fat)}g</strong><span>Fat</span></div>`;
@@ -716,13 +836,15 @@ const PulsePlateApp = (() => {
     $('[data-settings-profile-form]')?.addEventListener('submit', async event => {
       event.preventDefault();
       const displayName = nameInput.value.trim();
-      if (!displayName) { status.textContent = 'Display name cannot be empty.'; return; }
+      const displayNameValidation = validateDisplayName(displayName);
+      if (displayNameValidation) { status.textContent = displayNameValidation; return; }
       status.textContent = 'Saving…';
       const { error: profileError } = await supabase.from('profiles').update({ display_name: displayName }).eq('id', user.id);
       if (profileError) { status.textContent = profileError.message; return; }
       const { error: authError } = await supabase.auth.updateUser({ data: { display_name: displayName } });
       if (authError) { status.textContent = authError.message; return; }
       user.user_metadata = { ...(user.user_metadata || {}), display_name: displayName };
+      await supabase.from('moderation_flags').update({ status:'resolved', resolved_at:new Date().toISOString() }).eq('user_id', user.id).eq('content_type','display_name').eq('status','open');
       status.textContent = 'Display name updated.';
     });
 
@@ -756,7 +878,8 @@ const PulsePlateApp = (() => {
       event.preventDefault();
       const category = $('#feedbackCategory').value;
       const message = $('#feedbackMessage').value.trim();
-      if (!message) { feedbackStatus.textContent = 'Please enter your feedback.'; return; }
+      const feedbackValidation = validateMessageText(message);
+      if (feedbackValidation) { feedbackStatus.textContent = feedbackValidation; return; }
       feedbackStatus.textContent = 'Sending feedback…';
       const { error: feedbackError } = await supabase.from('feedback').insert({ user_id: user.id, category, message });
       if (feedbackError) { feedbackStatus.textContent = feedbackError.message; return; }
@@ -956,7 +1079,7 @@ const PulsePlateApp = (() => {
       builder.querySelector('[data-recipe-totals]').innerHTML=`<div><strong>${moneyless(totals.calories)}</strong><span>Calories</span></div><div><strong>${moneyless(totals.protein)}g</strong><span>Protein</span></div><div><strong>${moneyless(totals.carbs)}g</strong><span>Carbs</span></div><div><strong>${moneyless(totals.fat)}g</strong><span>Fat</span></div>`;
     };
     drawIngredients();
-    search?.addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(async()=>{const q=search.value.trim();if(q.length<2){results.innerHTML='';return;}results.innerHTML='<p class="page-copy">Searching…</p>';try{const r=await fetch(`/api/foods/search?q=${encodeURIComponent(q)}`);const d=await r.json();if(!r.ok)throw new Error(d.error||'Search failed');results.innerHTML=(d.foods||[]).slice(0,8).map(f=>`<button type="button" class="food-db-card" data-recipe-food-id="${f.id}"><strong>${escapeHtml(f.name)}</strong><p>${escapeHtml(f.brand||f.dataType||'USDA')}</p></button>`).join('')||'<p class="page-copy">No foods found.</p>';results.querySelectorAll('[data-recipe-food-id]').forEach(b=>b.onclick=()=>{const f=(d.foods||[]).find(x=>String(x.id)===b.dataset.recipeFoodId);if(!f)return;const n=f.nutrients||{};const amount=Number(f.servingSize||100);const unit=f.servingUnit||'g';const qty=Number(prompt(`How many ${unit} of ${f.name}?`,amount));if(!qty||qty<=0)return;const factor=qty/amount;ingredients.push({name:f.name,amount:qty,unit,fdc_id:f.id,calories:Number(n.calories||0)*factor,protein:Number(n.protein||0)*factor,carbs:Number(n.carbs||0)*factor,fat:Number(n.fat||0)*factor});drawIngredients();});}catch(e){results.innerHTML=`<p class="page-copy">${escapeHtml(e.message)}</p>`}},350)});
+    search?.addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(async()=>{const q=search.value.trim();if(q.length<2){results.innerHTML='';return;}results.innerHTML='<p class="page-copy">Searching…</p>';try{const r=await fetch(`/api/foods/search?q=${encodeURIComponent(q)}`);const d=await r.json();if(!r.ok)throw new Error(d.error||'Search failed');results.innerHTML=(d.foods||[]).slice(0,8).map(f=>`<button type="button" class="food-db-card" data-recipe-food-id="${f.id}"><strong>${escapeHtml(f.name)}</strong><p>${escapeHtml(f.brand||f.dataType||'USDA')}</p></button>`).join('')||'<p class="page-copy">No foods found.</p>';results.querySelectorAll('[data-recipe-food-id]').forEach(b=>b.onclick=()=>{const f=(d.foods||[]).find(x=>String(x.id)===b.dataset.recipeFoodId);if(!f)return;const n=f.nutrients||{};const amount=Number(f.servingSize||100);const unit=f.servingUnit||'g';const qty=Number(prompt(`How many ${unit} of ${f.name}?`,amount));if(!qty||qty<=0)return;const factor=String(unit).toLowerCase().includes('g') ? qty/100 : qty*amount/100;ingredients.push({name:f.name,amount:qty,unit,fdc_id:f.id,calories:Number(n.calories||0)*factor,protein:Number(n.protein||0)*factor,carbs:Number(n.carbs||0)*factor,fat:Number(n.fat||0)*factor});drawIngredients();});}catch(e){results.innerHTML=`<p class="page-copy">${escapeHtml(e.message)}</p>`}},350)});
     builder.querySelector('[data-save-recipe]')?.addEventListener('click',async()=>{const name=builder.querySelector('[data-recipe-name]').value.trim();const servings=Math.max(1,Number(builder.querySelector('[data-recipe-servings]').value)||1);if(!name||!ingredients.length){alert('Enter a recipe name and add at least one ingredient.');return;}const {data:recipe,error}=await supabase.from('recipes').insert({user_id:user.id,name,servings}).select('*').single();if(error){alert(error.message);return;}const rows=ingredients.map(i=>({recipe_id:recipe.id,user_id:user.id,food_name:i.name,serving:`${moneyless(i.amount)} ${i.unit}`,fdc_id:i.fdc_id,calories:i.calories,protein:i.protein,carbs:i.carbs,fat:i.fat}));const {error:itemError}=await supabase.from('recipe_items').insert(rows);if(itemError){alert(itemError.message);return;}ingredients=[];builder.querySelector('[data-recipe-name]').value='';drawIngredients();await loadRecipes(list);alert(`${name} was saved.`);});
   }
 
@@ -1156,14 +1279,22 @@ const PulsePlateApp = (() => {
     if (error) throw error;
     setText('[data-chat-title]', personById(selectedFriendId)?.display_name || 'Select a friend');
     thread.innerHTML = data?.length
-      ? data.map(m => `<article class="message-bubble ${m.sender_id === user.id ? 'mine' : ''}"><div>${escapeHtml(m.body)}</div><p>${new Date(m.created_at).toLocaleString()}</p></article>`).join('')
+      ? data.map(m => `<article class="message-bubble ${m.sender_id === user.id ? 'mine' : ''}"><div>${escapeHtml(m.body)}</div><p>${new Date(m.created_at).toLocaleString()}</p>${m.sender_id === user.id ? `<button type="button" class="text-button danger-button message-delete-button" data-delete-message="${m.id}">Delete</button>` : ''}</article>`).join('')
       : '<p class="page-copy">No messages yet.</p>';
+    thread.querySelectorAll('[data-delete-message]').forEach(button => {
+      button.onclick = async () => {
+        if (!confirm('Delete this message permanently?')) return;
+        const { error: deleteError } = await supabase.from('messages').delete().eq('id', button.dataset.deleteMessage).eq('sender_id', user.id);
+        if (deleteError) { alert(deleteError.message); return; }
+        await renderMessages();
+      };
+    });
     thread.scrollTop = thread.scrollHeight;
   }
 
   async function sendMessage() {
     if (!selectedFriendId) { alert('Select a friend first.'); return; }
-    const input = $('[data-message-text]'); const body = input?.value.trim(); if (!body) return;
+    const input = $('[data-message-text]'); const body = input?.value.trim(); const validation = validateMessageText(body); if (validation) { alert(validation); return; }
     const { error } = await supabase.rpc('send_message', { p_recipient_id: selectedFriendId, p_body: body });
     if (error) { alert(error.message); return; }
     input.value = '';
