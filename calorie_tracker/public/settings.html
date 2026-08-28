@@ -20,6 +20,7 @@
         <a class="nav-item" href="recipes.html"><span>=</span>Recipes</a>
         <a class="nav-item" href="social.html"><span>@</span>Friends</a>
         <a class="nav-item active" href="settings.html"><span>⚙</span>Settings</a>
+        <a class="nav-item" href="admin.html" data-admin-only hidden><span>!</span>Admin Moderation</a>
       </nav>
     </aside>
     <main class="main-content">
@@ -50,7 +51,7 @@
             <div class="field"><label for="settingsPasswordConfirm">Confirm new password</label><input id="settingsPasswordConfirm" type="password" minlength="8" autocomplete="new-password" required /></div>
             <button class="ghost-button" type="submit">Update password</button>
           </form>
-          <p class="settings-status" data-settings-status role="status"></p><p data-admin-only hidden><a class="primary-button" href="admin.html">Open Admin Moderation</a></p>
+          <p class="settings-status" data-settings-status role="status"></p>
         </section>
         <section class="panel settings-section" data-settings-section="privacy" hidden>
           <div class="panel-header"><div><p class="eyebrow">Privacy & data</p><h2>Privacy settings</h2><p class="page-copy">MacroSync only uses the information needed to operate your account and apply age-appropriate content rules.</p></div></div>
@@ -69,7 +70,7 @@
         
       </div>
     </main>
-    <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><a class="active" href="goals.html"><span>*</span>Goals</a></nav>
+    <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><a class="active" href="goals.html"><span>*</span>Goals</a><a href="admin.html" data-admin-only hidden><span>!</span>Admin</a></nav>
   </div>
 </body>
 </html>

@@ -817,6 +817,10 @@ a.date-button {
     padding: 0.2rem 0.1rem;
   }
 
+  .mobile-nav:has(a[data-admin-only]:not([hidden])) {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
   .mobile-nav a span,
   .mobile-nav a small {
     max-width: 100%;
@@ -1771,3 +1775,21 @@ body.light-theme .food-source-tab.active{background:var(--accent,#6d55e8);border
 /* Privacy, moderation admin, and account deletion */
 .account-danger-zone{border:1px solid rgba(220,80,80,.35);border-radius:14px;padding:16px}.admin-queue{display:grid;gap:14px}.admin-flag-item{border:1px solid var(--line);border-radius:14px;padding:15px}.admin-content-preview{white-space:pre-wrap;word-break:break-word;padding:12px;border-radius:10px;background:var(--surface-2);margin:.75rem 0}.legal-page{max-width:900px;margin:0 auto;padding:32px 18px}.legal-page .panel{display:grid;gap:12px}.legal-page h1,.legal-page h2{margin:.2rem 0}.legal-page p{line-height:1.6}
 .admin-tabs{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:1rem}.admin-tabs button{min-width:140px}.admin-flag-item .danger-button{border:1px solid rgba(220,80,80,.45);background:transparent;padding:.65rem 1rem;border-radius:10px;color:var(--red)}
+
+
+@media (max-width: 759px) {
+  body[data-page="settings"] .main-content,
+  body[data-page="admin"] .main-content {
+    padding-bottom: calc(12.5rem + env(safe-area-inset-bottom));
+  }
+
+  body[data-page="settings"] .settings-page-grid,
+  body[data-page="admin"] [data-admin-section],
+  body[data-page="admin"] .panel {
+    scroll-margin-bottom: calc(12rem + env(safe-area-inset-bottom));
+  }
+
+  body[data-page="admin"] .admin-queue {
+    padding-bottom: calc(4rem + env(safe-area-inset-bottom));
+  }
+}
