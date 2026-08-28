@@ -66,7 +66,7 @@ a {
 .workspace {
   width: min(100%, 76rem);
   margin: 0 auto;
-  padding: 1rem 1rem 6.75rem;
+  padding: 1rem 1rem calc(8.75rem + env(safe-area-inset-bottom));
 }
 
 .topbar {
@@ -600,13 +600,14 @@ a.date-button {
 .mobile-nav {
   position: fixed;
   right: 0.8rem;
-  bottom: 0.8rem;
+  bottom: max(0.8rem, env(safe-area-inset-bottom));
   left: 0.8rem;
   z-index: 10;
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 0.25rem;
   padding: 0.42rem;
+  padding-bottom: calc(0.42rem + env(safe-area-inset-bottom));
   border: 1px solid var(--line);
   border-radius: 1.1rem;
   background: rgba(10, 14, 23, 0.92);
@@ -780,6 +781,57 @@ a.date-button {
   .weight-row,
   .stat-row {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Mobile bottom-navigation safe area. Keep page content above the fixed nav. */
+@media (max-width: 759px) {
+  html {
+    scroll-padding-bottom: calc(9.5rem + env(safe-area-inset-bottom));
+  }
+
+  body {
+    min-height: 100dvh;
+    padding-bottom: 0;
+  }
+
+  .app-shell,
+  .workspace {
+    min-height: 100dvh;
+  }
+
+  .workspace {
+    padding-bottom: calc(10rem + env(safe-area-inset-bottom));
+  }
+
+  .mobile-nav {
+    bottom: max(0.65rem, env(safe-area-inset-bottom));
+    left: max(0.65rem, env(safe-area-inset-left));
+    right: max(0.65rem, env(safe-area-inset-right));
+    max-width: calc(100vw - 1.3rem - env(safe-area-inset-left) - env(safe-area-inset-right));
+  }
+
+  .mobile-nav a {
+    min-width: 0;
+    overflow: hidden;
+    padding: 0.2rem 0.1rem;
+  }
+
+  .mobile-nav a span,
+  .mobile-nav a small {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Fixed/sticky controls must not consume the same bottom area as the nav. */
+  .modal-overlay {
+    padding-bottom: calc(6rem + env(safe-area-inset-bottom));
+  }
+
+  .modal-card {
+    max-height: calc(100dvh - 7rem - env(safe-area-inset-bottom));
   }
 }
 
