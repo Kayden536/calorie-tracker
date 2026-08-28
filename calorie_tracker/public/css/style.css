@@ -1714,3 +1714,8 @@ body.light-theme .auth-card {
 body.light-theme .food-source-tab{background:var(--surface-2,#f1f3f7);border-color:var(--line,#d6dae3);color:var(--ink,#20232a)}
 body.light-theme .food-source-tab:hover{background:#fff;border-color:var(--accent,#6d55e8)}
 body.light-theme .food-source-tab.active{background:var(--accent,#6d55e8);border-color:var(--accent,#6d55e8);color:#fff}
+
+
+/* Privacy, moderation admin, and account deletion */
+.account-danger-zone{border:1px solid rgba(220,80,80,.35);border-radius:14px;padding:16px}.admin-queue{display:grid;gap:14px}.admin-flag-item{border:1px solid var(--line);border-radius:14px;padding:15px}.admin-content-preview{white-space:pre-wrap;word-break:break-word;padding:12px;border-radius:10px;background:var(--surface-2);margin:.75rem 0}.legal-page{max-width:900px;margin:0 auto;padding:32px 18px}.legal-page .panel{display:grid;gap:12px}.legal-page h1,.legal-page h2{margin:.2rem 0}.legal-page p{line-height:1.6}
+.admin-tabs{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:1rem}.admin-tabs button{min-width:140px}.admin-flag-item .danger-button{border:1px solid rgba(220,80,80,.45);background:transparent;padding:.65rem 1rem;border-radius:10px;color:var(--red)}

@@ -453,6 +453,7 @@ const PulsePlateApp = (() => {
     if (page === 'progress') await renderProgress();
     if (page === 'recipes') await renderRecipes();
     if (page === 'social') await renderSocial();
+    if (page === 'admin') await renderAdmin();
     wireDateControls();
   }
 
@@ -940,6 +941,20 @@ const PulsePlateApp = (() => {
 
     const isAdmin = profile?.is_admin === true;
     $$('[data-admin-only]').forEach(el => { el.hidden = !isAdmin; });
+    const emailSearchToggle = $('[data-email-search-enabled]');
+    if (emailSearchToggle) emailSearchToggle.checked = profile?.email_search_enabled !== false;
+    emailSearchToggle?.addEventListener('change', async () => {
+      const { error } = await supabase.from('profiles').update({ email_search_enabled: emailSearchToggle.checked }).eq('id', user.id);
+      if (error) { emailSearchToggle.checked = !emailSearchToggle.checked; alert(error.message); }
+    });
+    $('[data-delete-account]')?.addEventListener('click', async () => {
+      if (!confirm('Delete your MacroSync account and all of its application data permanently? This cannot be undone.')) return;
+      const ds = $('[data-delete-account-status]'); if (ds) ds.textContent = 'Deleting account…';
+      const { data, error } = await supabase.rpc('delete_my_account');
+      if (error) { if (ds) ds.textContent = error.message; return; }
+      await supabase.auth.signOut();
+      window.location.href = 'auth.html';
+    });
     const tabs = $$('[data-settings-tab]');
     const sections = $$('[data-settings-section]');
     const showTab = async tab => {
@@ -1144,6 +1159,40 @@ const PulsePlateApp = (() => {
   function openRecipeLogModal(recipe){
     const items=recipe?.recipe_items||[];if(!recipe||!items.length)return;const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close-modal type="button">×</button><p class="eyebrow">Recipe</p><h2>${escapeHtml(recipe.name)}</h2><div class="form-grid"><div class="field"><label>Servings</label><input data-recipe-log-amount type="number" min="0.25" step="0.25" value="1"></div><div class="field"><label>Meal</label><select data-recipe-log-meal><option>Breakfast</option><option>Lunch</option><option>Dinner</option><option>Snack</option></select></div></div><div data-recipe-log-preview class="nutrition-summary"></div><div class="modal-actions"><button class="ghost-button" data-close-modal type="button">Cancel</button><button class="primary-button" data-confirm-recipe type="button">Add to meal</button></div></section>`;document.body.appendChild(overlay);overlay.querySelectorAll('[data-close-modal]').forEach(b=>b.onclick=()=>overlay.remove());const amount=overlay.querySelector('[data-recipe-log-amount]');const preview=overlay.querySelector('[data-recipe-log-preview]');const total=items.reduce((a,i)=>({calories:a.calories+Number(i.calories||0),protein:a.protein+Number(i.protein||0),carbs:a.carbs+Number(i.carbs||0),fat:a.fat+Number(i.fat||0)}),{calories:0,protein:0,carbs:0,fat:0});const per={calories:total.calories/Number(recipe.servings||1),protein:total.protein/Number(recipe.servings||1),carbs:total.carbs/Number(recipe.servings||1),fat:total.fat/Number(recipe.servings||1)};const calc=()=>{const x=Number(amount.value)||1;preview.innerHTML=`<div><strong>${moneyless(per.calories*x)}</strong><span>Calories</span></div><div><strong>${moneyless(per.protein*x)}g</strong><span>Protein</span></div><div><strong>${moneyless(per.carbs*x)}g</strong><span>Carbs</span></div><div><strong>${moneyless(per.fat*x)}g</strong><span>Fat</span></div>`};amount.oninput=calc;calc();overlay.querySelector('[data-confirm-recipe]').onclick=async()=>{const x=Number(amount.value)||1;const meal=overlay.querySelector('[data-recipe-log-meal]').value;const row={user_id:user.id,logged_date:dateKey(selectedDate),meal,food_name:recipe.name,serving:`${moneyless(x)} serving${x===1?'':'s'}`,fdc_id:null,calories:per.calories*x,protein:per.protein*x,carbs:per.carbs*x,fat:per.fat*x};const {error}=await supabase.from('food_entries').insert(row);if(error){alert(error.message);return;}overlay.remove();await renderSelectedDateEntries();};
   }
+
+  async function renderAdmin() {
+    const gate = $('[data-admin-dashboard]'); if (!gate) return;
+    const { data: profile, error: profileError } = await supabase.from('profiles').select('is_admin').eq('id', user.id).single();
+    if (profileError || !profile?.is_admin) { gate.innerHTML = '<section class="panel"><h2>Administrator access required</h2><p class="page-copy">This page is restricted to MacroSync administrators.</p></section>'; return; }
+    const status = $('[data-admin-status]');
+    const esc = escapeHtml;
+    const loadFlags = async () => {
+      const list = $('[data-admin-queue]');
+      const { data, error } = await supabase.rpc('admin_list_moderation_queue');
+      if (error) { list.innerHTML=`<p class="page-copy">${esc(error.message)}</p>`; return; }
+      const flags=data||[];
+      list.innerHTML=flags.length?flags.map(f=>{const isName=f.content_type==='display_name';const actions=isName?'<button class="primary-button" data-admin-action="replace">Change name</button><button class="ghost-button danger-button" data-admin-action="reset_name">Reset name</button>':'<button class="primary-button" data-admin-action="replace">Replace message</button><button class="ghost-button danger-button" data-admin-action="delete">Delete message</button>';return `<article class="admin-flag-item" data-admin-flag="${f.flag_id}"><div class="feedback-item-head"><strong>${esc(isName?'Flagged display name':'Flagged message')}</strong><span>${new Date(f.created_at).toLocaleString()}</span></div><div class="feedback-author">${esc(f.display_name||'Unknown')} · ${esc(f.email||'Email hidden')}</div><p><strong>Reason:</strong> ${esc(f.reason)}</p><div class="admin-content-preview">${esc(f.content||'[content unavailable]')}</div><div class="field"><label>Replacement</label><textarea rows="2" data-admin-replacement></textarea></div><div class="field"><label>Message to user</label><textarea rows="2" data-admin-note placeholder="Explain the action and what the user should do next."></textarea></div><div class="feedback-actions">${actions}<button class="ghost-button" data-admin-status-action="${f.user_id}">Suspend / ban account</button></div></article>`}).join(''):'<p class="empty-state">No open flagged names or messages.</p>';
+      list.querySelectorAll('[data-admin-action]').forEach(btn=>btn.onclick=async()=>{const card=btn.closest('[data-admin-flag]');const {error}=await supabase.rpc('admin_moderation_action',{p_flag_id:Number(card.dataset.adminFlag),p_action:btn.dataset.adminAction,p_replacement:card.querySelector('[data-admin-replacement]')?.value||null,p_note:card.querySelector('[data-admin-note]')?.value||null});if(error){alert(error.message);return;}await loadFlags();});
+      list.querySelectorAll('[data-admin-status-action]').forEach(btn=>btn.onclick=()=>openAccountStatusModal(btn.dataset.adminStatusAction));
+      return flags.length;
+    };
+    const loadReports = async () => {
+      const list=$('[data-admin-reports]'); const {data,error}=await supabase.rpc('admin_list_reports');
+      if(error){list.innerHTML=`<p class="page-copy">${esc(error.message)}</p>`;return;}
+      const reports=data||[]; list.innerHTML=reports.length?reports.map(r=>`<article class="admin-flag-item" data-report="${r.report_id}" data-reported-user="${r.reported_user_id}"><div class="feedback-item-head"><strong>Report #${r.report_id}</strong><span>${new Date(r.created_at).toLocaleString()}</span></div><div class="feedback-author">Reporter: ${esc(r.reporter_name)} · Reported: ${esc(r.reported_name)}</div><p><strong>Reason:</strong> ${esc(r.reason)}</p><div class="admin-content-preview">${esc(r.message_content||'[message deleted]')}</div><div class="field"><label>Admin note</label><textarea rows="2" data-report-note placeholder="Explain the action taken."></textarea></div><div class="feedback-actions"><button class="ghost-button" data-report-status="dismissed">Dismiss</button><button class="ghost-button" data-report-status="resolved">Resolve</button><button class="primary-button" data-report-suspend> Suspend account </button><button class="danger-button" data-report-ban>Ban account</button></div></article>`).join(''):'<p class="empty-state">No open user reports.</p>';
+      list.querySelectorAll('[data-report-status]').forEach(btn=>btn.onclick=async()=>{const card=btn.closest('[data-report]');const {error}=await supabase.rpc('admin_update_report',{p_report_id:Number(card.dataset.report),p_status:btn.dataset.reportStatus,p_note:card.querySelector('[data-report-note]').value||null});if(error)alert(error.message);else await loadReports();});
+      list.querySelectorAll('[data-report-suspend],[data-report-ban]').forEach(btn=>btn.onclick=async()=>{const card=btn.closest('[data-report]');await openAccountStatusModal(card.dataset.reportedUserId,btn.hasAttribute('data-report-ban')?'banned':'suspended',Number(card.dataset.report));});
+    };
+    const loadFeedback=async()=>{const list=$('[data-admin-feedback]');const {data,error}=await supabase.from('feedback').select('id,user_id,category,message,created_at,read_at').order('created_at',{ascending:false});if(error){list.innerHTML=`<p class="page-copy">${esc(error.message)}</p>`;return;}const rows=data||[];list.innerHTML=rows.length?rows.map(f=>`<article class="admin-flag-item"><div class="feedback-item-head"><strong>${esc(f.category)}</strong><span>${new Date(f.created_at).toLocaleString()}</span></div><p>${esc(f.message)}</p><div class="feedback-actions"><button class="ghost-button" data-feedback-delete="${f.id}">Delete feedback</button></div></article>`).join(''):'<p class="empty-state">No feedback yet.</p>';list.querySelectorAll('[data-feedback-delete]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this feedback?'))return;const {error}=await supabase.from('feedback').delete().eq('id',Number(b.dataset.feedbackDelete));if(error)alert(error.message);else await loadFeedback();});};
+    async function openAccountStatusModal(targetId, preset=null, reportId=null){
+      const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" type="button" data-close>×</button><p class="eyebrow">Account moderation</p><h2>Suspend or ban account</h2><div class="field"><label>Status</label><select data-status><option value="suspended">Suspended</option><option value="banned">Banned</option><option value="active">Restore active</option></select></div><div class="field"><label>Explanation to user</label><textarea rows="4" data-status-note placeholder="Explain why this action was taken."></textarea></div><div class="field"><label>Suspension end (optional)</label><input type="datetime-local" data-status-until></div><div class="modal-actions"><button class="ghost-button" data-close>Cancel</button><button class="primary-button" data-apply-status>Apply</button></div></section>`;document.body.appendChild(overlay);overlay.querySelector('[data-status]').value=preset||'suspended';overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());overlay.querySelector('[data-apply-status]').onclick=async()=>{const statusValue=overlay.querySelector('[data-status]').value;const note=overlay.querySelector('[data-status-note]').value||null;const until=overlay.querySelector('[data-status-until]').value?new Date(overlay.querySelector('[data-status-until]').value).toISOString():null;const {error}=await supabase.rpc('admin_set_account_status',{p_user_id:targetId,p_status:statusValue,p_note:note,p_until:until});if(error){alert(error.message);return;}if(reportId)await supabase.rpc('admin_update_report',{p_report_id:reportId,p_status:'resolved',p_note:note});overlay.remove();await Promise.all([loadFlags(),loadReports()]);};
+    }
+    $('[data-admin-refresh]')?.addEventListener('click',async()=>{await Promise.all([loadFlags(),loadReports(),loadFeedback()]);status.textContent='Admin data refreshed.';});
+    $('[data-admin-scan]')?.addEventListener('click',async()=>{status.textContent='Scanning existing content…';const {error}=await supabase.rpc('admin_scan_existing_content',{p_limit:1000});if(error){status.textContent=error.message;return;}await loadFlags();status.textContent='Existing-content scan complete.';});
+    $$('[data-admin-tab]').forEach(tab=>tab.onclick=()=>{$$('[data-admin-tab]').forEach(x=>x.classList.toggle('primary-button',x===tab));$$('[data-admin-tab]').forEach(x=>x.classList.toggle('ghost-button',x!==tab));$$('[data-admin-section]').forEach(sec=>sec.hidden=sec.dataset.adminSection!==tab.dataset.adminTab);});
+    await Promise.all([loadFlags(),loadReports(),loadFeedback()]);
+  }
+
   async function renderSocial() {
     if (messagePollTimer) clearInterval(messagePollTimer);
     const search = $('[data-friend-search]');
@@ -1157,7 +1206,7 @@ const PulsePlateApp = (() => {
       .single();
     if (profileError) throw profileError;
 
-    await loadSocialData();
+    await loadSocialData('');
 
     const acceptedFriends = getAcceptedFriends();
     if (!selectedFriendId || !acceptedFriends.some(friend => friend.id === selectedFriendId)) {
@@ -1167,8 +1216,12 @@ const PulsePlateApp = (() => {
       selectedMealFriendId = acceptedFriends[0]?.id || null;
     }
 
-    const drawPeople = () => renderPeople(search?.value || '');
-    if (search) search.oninput = drawPeople;
+    const drawPeople = async () => {
+      await loadSocialData(search?.value || '');
+      renderPeople(search?.value || '');
+      renderFriendsList(); renderFriendSelectors();
+    };
+    if (search) { let timer; search.oninput = () => { clearTimeout(timer); timer=setTimeout(()=>drawPeople().catch(console.error),220); }; }
     drawPeople();
     renderFriendsList();
     renderFriendSelectors();
@@ -1183,9 +1236,9 @@ const PulsePlateApp = (() => {
     }, 3000);
   }
 
-  async function loadSocialData() {
+  async function loadSocialData(query='') {
     const [{ data: people, error: peopleError }, { data: connections, error: connectionsError }] = await Promise.all([
-      supabase.from('profiles').select('id,display_name,email,role,business_name').neq('id', user.id).order('display_name'),
+      supabase.rpc('search_people', { p_query: query || '' }),
       supabase.from('friend_connections').select('*').or(`requester_id.eq.${user.id},addressee_id.eq.${user.id}`).order('created_at', { ascending: false })
     ]);
     if (peopleError) throw peopleError;
@@ -1328,8 +1381,9 @@ const PulsePlateApp = (() => {
     if (error) throw error;
     setText('[data-chat-title]', personById(selectedFriendId)?.display_name || 'Select a friend');
     thread.innerHTML = data?.length
-      ? data.map(m => `<article class="message-bubble ${m.sender_id === user.id ? 'mine' : ''}"><div>${escapeHtml(m.body)}</div><p>${new Date(m.created_at).toLocaleString()}</p>${m.sender_id === user.id ? `<button type="button" class="text-button danger-button message-delete-button" data-delete-message="${m.id}">Delete</button>` : ''}</article>`).join('')
+      ? data.map(m => `<article class="message-bubble ${m.sender_id === user.id ? 'mine' : ''}"><div>${escapeHtml(m.body)}</div><p>${new Date(m.created_at).toLocaleString()}</p>${m.sender_id === user.id ? `<button type="button" class="text-button danger-button message-delete-button" data-delete-message="${m.id}">Delete</button>` : `<button type="button" class="text-button danger-button" data-report-message="${m.id}">Report</button>`}</article>`).join('')
       : '<p class="page-copy">No messages yet.</p>';
+    thread.querySelectorAll('[data-report-message]').forEach(button => { button.onclick = async () => { const reason = prompt('Why are you reporting this message?'); if (!reason?.trim()) return; const { error } = await supabase.rpc('report_message', { p_message_id: Number(button.dataset.reportMessage), p_reason: reason.trim() }); if (error) alert(error.message); else { alert('Report submitted to MacroSync administrators.'); button.disabled = true; button.textContent = 'Reported'; } }; });
     thread.querySelectorAll('[data-delete-message]').forEach(button => {
       button.onclick = async () => {
         if (!confirm('Delete this message permanently?')) return;

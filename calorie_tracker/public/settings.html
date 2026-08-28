@@ -32,7 +32,7 @@
           <div class="settings-subnav">
             <button class="active" type="button" data-settings-tab="account">Settings</button>
             <button type="button" data-settings-tab="feedback">Send feedback</button>
-            <button type="button" data-settings-tab="feedback-inbox" data-admin-only hidden>Feedback inbox <span class="feedback-badge" data-feedback-unread-count hidden>0</span></button>
+            <button type="button" data-settings-tab="privacy">Privacy</button>
           </div>
         </aside>
         <section class="panel settings-section" data-settings-section="account">
@@ -50,7 +50,13 @@
             <div class="field"><label for="settingsPasswordConfirm">Confirm new password</label><input id="settingsPasswordConfirm" type="password" minlength="8" autocomplete="new-password" required /></div>
             <button class="ghost-button" type="submit">Update password</button>
           </form>
-          <p class="settings-status" data-settings-status role="status"></p>
+          <p class="settings-status" data-settings-status role="status"></p><p data-admin-only hidden><a class="primary-button" href="admin.html">Open Admin Moderation</a></p>
+        </section>
+        <section class="panel settings-section" data-settings-section="privacy" hidden>
+          <div class="panel-header"><div><p class="eyebrow">Privacy & data</p><h2>Privacy settings</h2><p class="page-copy">MacroSync only uses the information needed to operate your account and apply age-appropriate content rules.</p></div></div>
+          <label class="toggle-row"><input type="checkbox" data-email-search-enabled><span><strong>Allow people to find me by email</strong><small>Turn this off to remove your email from friend search. Your display name can still be searched.</small></span></label>
+          <div class="settings-divider"><p class="page-copy"><strong>Age declaration:</strong> Your date of birth is used for content restrictions and cannot be changed through the app.</p><p class="page-copy"><strong>Account deletion:</strong> Deleting your account permanently removes your MacroSync profile, food logs, measurements, friendships, messages, feedback, and other application data.</p></div>
+          <div class="settings-divider account-danger-zone"><h3>Delete account</h3><p class="page-copy">This cannot be undone.</p><button class="ghost-button danger-button" type="button" data-delete-account>Delete my account</button><p class="settings-status" data-delete-account-status role="status"></p></div>
         </section>
         <section class="panel settings-section" data-settings-section="feedback" hidden>
           <div class="panel-header"><div><p class="eyebrow">Feedback</p><h2>Tell us what you think</h2></div></div>
@@ -60,11 +66,7 @@
             <button class="primary-button" type="submit">Send feedback</button><p class="settings-status" data-feedback-status role="status"></p>
           </form>
         </section>
-        <section class="panel settings-section" data-settings-section="feedback-inbox" hidden data-admin-only>
-          <div class="panel-header"><div><p class="eyebrow">Administration</p><h2>Feedback inbox</h2><p class="page-copy">New submissions appear first. Opened items are marked as read.</p></div><button class="ghost-button" type="button" data-refresh-feedback>Refresh</button></div>
-          <div class="feedback-inbox" data-feedback-inbox></div>
-          <p class="settings-status" data-feedback-inbox-status></p>
-        </section>
+        
       </div>
     </main>
     <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><a class="active" href="goals.html"><span>*</span>Goals</a></nav>

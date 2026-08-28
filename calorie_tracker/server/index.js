@@ -16,6 +16,20 @@ const USDA_API_KEY = String(process.env.USDA_API_KEY || "").trim();
 const SUPABASE_URL = String(process.env.SUPABASE_URL || "").trim();
 const SUPABASE_PUBLISHABLE_KEY = String(process.env.SUPABASE_PUBLISHABLE_KEY || "").trim();
 
+// Lightweight in-process rate limiting for public API endpoints. For multi-instance deployments,
+// move this counter to a shared store such as Redis.
+const rateBuckets = new Map();
+function rateLimit(max, windowMs) {
+  return (req, res, next) => {
+    const key = `${req.ip}:${req.path}`; const now = Date.now();
+    let b = rateBuckets.get(key);
+    if (!b || now - b.start >= windowMs) b = { start: now, count: 0 };
+    b.count++; rateBuckets.set(key, b);
+    if (b.count > max) return res.status(429).json({ error: "Too many requests. Please wait and try again." });
+    next();
+  };
+}
+
 function nutrientMap(food) {
   // FoodData Central nutrient records are represented on a 100 g / 100 ml basis.
   // Keep that basis intact here; serving-size conversion is handled separately.
@@ -87,7 +101,7 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-app.get("/api/foods/search", async (req, res) => {
+app.get("/api/foods/search", rateLimit(60, 60_000), async (req, res) => {
   const query = String(req.query.q || "").trim();
   if (query.length < 2) return res.json({ foods: [], totalHits: 0 });
   if (!USDA_API_KEY) return res.status(500).json({ error: "USDA API key is not configured." });
@@ -144,11 +158,17 @@ app.get("/api/foods/search", async (req, res) => {
   }
 });
 
+app.use((error, _req, res, _next) => {
+  console.error("Unhandled server error:", error);
+  if (res.headersSent) return;
+  res.status(500).json({ error: "An unexpected server error occurred." });
+});
+
 app.use((_req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "auth.html"));
 });
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log("========================================");
   console.log("       PulsePlate Alpha Server");
   console.log("========================================");
@@ -157,3 +177,7 @@ app.listen(port, () => {
   console.log(`Supabase: ${SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY ? "CONFIGURED" : "MISSING"}`);
   console.log("========================================");
 });
+
+
+process.on("SIGTERM", () => server.close(() => process.exit(0)));
+process.on("SIGINT", () => server.close(() => process.exit(0)));

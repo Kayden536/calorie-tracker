@@ -576,54 +576,11 @@ create policy "community foods insert own" on public.community_foods for insert 
 create policy "community foods update own" on public.community_foods for update to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "community foods delete own" on public.community_foods for delete to authenticated using (auth.uid() = user_id);
 
-create or replace function public.validate_macro_text(p_text text, p_kind text)
-returns text
-language plpgsql
-immutable
-as $$
-declare v text := lower(trim(coalesce(p_text,'')));
-begin
-  if char_length(v) = 0 then return 'Text cannot be empty.'; end if;
-  if p_kind = 'display_name' then
-    if char_length(v) > 80 then return 'Display names must be 80 characters or fewer.'; end if;
-    -- Strict display-name validation. Check normal word tokens and also exact/near-exact
-    -- separator-obfuscated forms without rejecting harmless longer words such as "classic".
-    if (' ' || regexp_replace(v, '[^a-z0-9]+', ' ', 'g') || ' ') ~
-       '(^| )(fuck|fucker|fucking|shit|shitter|bitch|bitches|asshole|bastard|cunt|dick|pussy|cock|slut|whore|porn|pornography|nude|nudes|naked|sex|sexual|sexy|onlyfans|rape|rapist|pedo|pedophile|groomer|kill|kys|nazi|slur)( |$)' then
-      return 'That display name contains language or content that is not allowed.';
-    end if;
-    if regexp_replace(v, '[^a-z0-9]', '', 'g') in
-       ('fuck','fucker','fucking','shit','shitter','bitch','bitches','asshole','bastard','cunt','dick','pussy','cock','slut','whore','porn','pornography','nude','nudes','naked','sex','sexual','sexy','onlyfans','rape','rapist','pedo','pedophile','groomer','kill','kys','nazi','slur') then
-      return 'That display name contains language or content that is not allowed.';
-    end if;
-    if regexp_replace(v, '[^a-z0-9]', '', 'g') ~
-       '(fuck|fucker|fucking|shit|shitter|bitch|bitches|asshole|bastard|cunt|pussy|cock|slut|whore|porn|pornography|nudes?|naked|onlyfans|rapist|pedophile|groomer)' then
-      return 'That display name contains language or content that is not allowed.';
-    end if;
-    if regexp_replace(v, '[^a-z0-9]', '', 'g') ~ '(nigger|niggers|nigga|niggas|chink|chinks|spic|spics|kike|kikes|gook|gooks|wetback|wetbacks|beaner|beaners|raghead|ragheads|coon|coons|fag|fags|faggot|faggots|dyke|dykes|tranny|trannies)' then
-      return 'That display name contains hateful or discriminatory language and is not allowed.';
-    end if;
-  elsif p_kind = 'message' or p_kind = 'feedback' then
-    if char_length(v) > 4000 then return 'Text must be 4000 characters or fewer.'; end if;
-    -- Hate/discrimination check. Normalize separators so simple punctuation/spacing evasion is caught.
-    if regexp_replace(v, '[^a-z0-9]', '', 'g') ~ '(nigger|niggers|nigga|niggas|chink|chinks|spic|spics|kike|kikes|gook|gooks|wetback|wetbacks|beaner|beaners|raghead|ragheads|coon|coons|faggot|faggots|tranny|trannies|dyke|dykes)' then return 'This text contains hateful or discriminatory language and cannot be submitted.'; end if;
-    if (' ' || regexp_replace(v, '[^a-z0-9]+', ' ', 'g') || ' ') ~ '(^| )(nigger|niggers|nigga|niggas|chink|chinks|spic|spics|kike|kikes|gook|gooks|wetback|wetbacks|beaner|beaners|raghead|ragheads|coon|coons|fag|fags|faggot|faggots|dyke|dykes|tranny|trannies)( |$)' then return 'This text contains hateful or discriminatory language and cannot be submitted.'; end if;
-    if v ~ '(\msex\M|\msexual\M|porn|pornography|nudes?|naked|sexual services|sexually explicit|child sexual|minor sexual|onlyfans)' then return 'This text contains sexual or otherwise inappropriate content and cannot be submitted.'; end if;
-    if v ~ '(^|[^0-9])([0-9]{1,3}\\.){3}[0-9]{1,3}([^0-9]|$)' then return 'This text appears to contain an IP address. Remove it before submitting.'; end if;
-    if v ~ '([0-9a-f]{1,4}:){2,}[0-9a-f]{1,4}' then return 'This text appears to contain an IP address. Remove it before submitting.'; end if;
-    if v ~ '(^|[^0-9])[0-9]{1,5}[[:space:]]+[[:alnum:].''-]+[[:space:]]+(street|st|road|rd|avenue|ave|boulevard|blvd|drive|dr|lane|ln|court|ct|way|parkway|pkwy|place|pl)([^[:alpha:]]|$)' then return 'This text appears to contain a home address. Remove personal location information before submitting.'; end if;
-    if v ~ '(^|[^0-9])\\+?[0-9][0-9(). -]{7,}[0-9]([^0-9]|$)' then return 'This text appears to contain a phone number. Remove personal contact information before submitting.'; end if;
-    if v ~ '[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}' then return 'This text appears to contain an email address. Remove personal contact information before submitting.'; end if;
-  end if;
-  return null;
-end;
-$$;
-
 create or replace function public.validate_profile_display_name()
 returns trigger language plpgsql as $$
 declare msg text;
 begin
-  msg := public.validate_macro_text(new.display_name, 'display_name');
+  msg := public.validate_macro_text(new.display_name, 'display_name', false);
   if msg is not null then raise exception '%', msg; end if;
   return new;
 end;
@@ -635,7 +592,7 @@ create or replace function public.validate_feedback_text()
 returns trigger language plpgsql as $$
 declare msg text;
 begin
-  msg := public.validate_macro_text(new.message, 'feedback');
+  msg := public.validate_macro_text(new.message, 'feedback', false);
   if msg is not null then raise exception '%', msg; end if;
   return new;
 end;
@@ -657,7 +614,7 @@ begin
   if auth.uid() is null then raise exception 'You must be signed in to send messages.'; end if;
   if p_recipient_id = auth.uid() then raise exception 'You cannot message yourself.'; end if;
   if char_length(trim(coalesce(p_body,''))) < 1 or char_length(trim(p_body)) > 4000 then raise exception 'Message must contain between 1 and 4000 characters.'; end if;
-  validation_message := public.validate_macro_text(p_body, 'message');
+  validation_message := public.validate_macro_text(p_body, 'message', false);
   if validation_message is not null then raise exception '%', validation_message; end if;
   select exists (select 1 from public.friend_connections c where c.status='accepted' and ((c.requester_id=auth.uid() and c.addressee_id=p_recipient_id) or (c.requester_id=p_recipient_id and c.addressee_id=auth.uid()))) into connection_exists;
   if not connection_exists then raise exception 'You can only message an accepted friend.'; end if;
@@ -710,7 +667,7 @@ begin
   if auth.uid() is null then raise exception 'You must be signed in.'; end if;
   select * into p from public.profiles where id = auth.uid();
 
-  reason_text := public.validate_macro_text(p.display_name, 'display_name');
+  reason_text := public.validate_macro_text(p.display_name, 'display_name', false);
   if reason_text is not null then
     has_bad_name := true;
     update public.profiles set name_change_required = true where id = auth.uid();
@@ -725,7 +682,7 @@ begin
   end if;
 
   for m in select * from public.messages where sender_id=auth.uid() loop
-    reason_text := public.validate_macro_text(m.body, 'message');
+    reason_text := public.validate_macro_text(m.body, 'message', false);
     if reason_text is not null then
       insert into public.moderation_flags(user_id,content_type,content_id,content_key,reason)
       values(auth.uid(),'message',m.id,'message:'||m.id,reason_text)
@@ -740,6 +697,254 @@ begin
 end;
 $$;
 grant execute on function public.review_my_content() to authenticated;
+
+
+-- ================================================================
+-- Privacy, account deletion, moderation administration, and data integrity
+-- ================================================================
+alter table public.profiles add column if not exists email_search_enabled boolean not null default true;
+alter table public.profiles add column if not exists privacy_notice_version text not null default '2026-08-28';
+
+-- Food nutrition validation: calories should be reasonably consistent with 4/4/9 macro energy.
+-- A tolerance is necessary because USDA and food labels can account for fiber, alcohol,
+-- sugar alcohols, organic acids, rounding, and Atwater-specific factors.
+create or replace function public.validate_food_nutrition_values(
+  p_calories numeric,
+  p_protein numeric,
+  p_carbs numeric,
+  p_fat numeric
+) returns text
+language plpgsql immutable as $$
+declare
+  macro_calories numeric;
+  diff numeric;
+begin
+  if coalesce(p_calories,0) < 0 or coalesce(p_protein,0) < 0 or coalesce(p_carbs,0) < 0 or coalesce(p_fat,0) < 0 then
+    return 'Nutrition values cannot be negative.';
+  end if;
+  if coalesce(p_protein,0) > 100 or coalesce(p_carbs,0) > 100 or coalesce(p_fat,0) > 100 then
+    return 'A macronutrient cannot exceed 100 g per 100 g of food.';
+  end if;
+  if coalesce(p_protein,0) + coalesce(p_carbs,0) + coalesce(p_fat,0) > 100.5 then
+    return 'Protein, carbohydrates, and fat exceed the food mass.';
+  end if;
+  macro_calories := coalesce(p_protein,0)*4 + coalesce(p_carbs,0)*4 + coalesce(p_fat,0)*9;
+  if coalesce(p_calories,0) > 0 and macro_calories > 0 then
+    diff := abs(macro_calories - p_calories) / p_calories;
+    if diff > 0.35 then
+      return 'Calories differ too much from the calories implied by protein, carbohydrates, and fat.';
+    end if;
+  end if;
+  return null;
+end;
+$$;
+grant execute on function public.validate_food_nutrition_values(numeric,numeric,numeric,numeric) to authenticated;
+
+create or replace function public.validate_community_food_row()
+returns trigger language plpgsql as $$
+declare msg text;
+begin
+  msg := public.validate_macro_text(new.name, 'display_name', false);
+  if msg is not null then raise exception 'Food name rejected: %', msg; end if;
+  msg := public.validate_food_nutrition_values(new.calories_per_100g,new.protein_per_100g,new.carbs_per_100g,new.fat_per_100g);
+  if msg is not null then raise exception '%', msg; end if;
+  new.updated_at := now();
+  return new;
+end;
+$$;
+drop trigger if exists validate_community_food_row on public.community_foods;
+create trigger validate_community_food_row before insert or update on public.community_foods
+for each row execute function public.validate_community_food_row();
+
+-- Validate personal foods as well when that table exists.
+do $$
+begin
+  if to_regclass('public.user_foods') is not null then
+    execute $fn$
+      create or replace function public.validate_user_food_row()
+      returns trigger language plpgsql as $body$
+      declare msg text;
+      begin
+        msg := public.validate_macro_text(new.name, 'display_name', false);
+        if msg is not null then raise exception 'Food name rejected: %', msg; end if;
+        msg := public.validate_food_nutrition_values(new.calories,new.protein,new.carbs,new.fat);
+        if msg is not null then raise exception '%', msg; end if;
+        return new;
+      end;
+      $body$;
+    $fn$;
+    execute 'drop trigger if exists validate_user_food_row on public.user_foods';
+    execute 'create trigger validate_user_food_row before insert or update on public.user_foods for each row execute function public.validate_user_food_row()';
+  end if;
+end $$;
+
+-- Admin moderation audit trail. Do not store private moderator notes in client-visible tables.
+create table if not exists public.moderation_actions (
+  id bigint generated by default as identity primary key,
+  flag_id bigint references public.moderation_flags(id) on delete set null,
+  admin_id uuid references auth.users(id) on delete set null,
+  target_user_id uuid references auth.users(id) on delete set null,
+  action text not null check (action in ('review','replace','delete','reset_name')),
+  moderator_note text,
+  created_at timestamptz not null default now()
+);
+alter table public.moderation_flags add column if not exists reviewed_by uuid references auth.users(id) on delete set null;
+alter table public.moderation_flags add column if not exists moderator_note text;
+alter table public.moderation_flags add column if not exists action_taken text;
+alter table public.moderation_flags add column if not exists reviewed_at timestamptz;
+create index if not exists moderation_flags_status_created_idx on public.moderation_flags(status, created_at desc);
+create index if not exists moderation_actions_flag_idx on public.moderation_actions(flag_id, created_at desc);
+alter table public.moderation_actions enable row level security;
+drop policy if exists "moderation actions admin read" on public.moderation_actions;
+create policy "moderation actions admin read" on public.moderation_actions for select to authenticated using (public.is_admin());
+
+-- Admin can securely review all flagged content without granting raw message SELECT to ordinary users.
+create or replace function public.admin_list_moderation_queue()
+returns table(
+  flag_id bigint, content_type text, content_id bigint, user_id uuid,
+  display_name text, email text, content text, reason text, status text,
+  created_at timestamptz, moderator_note text, action_taken text
+)
+language plpgsql security definer set search_path=public as $$
+begin
+  if not public.is_admin() then raise exception 'Administrator access required.'; end if;
+  return query
+  select f.id,f.content_type,f.content_id,f.user_id,p.display_name,p.email,
+         case when f.content_type='message' then m.body else p.display_name end,
+         f.reason,f.status,f.created_at,f.moderator_note,f.action_taken
+  from public.moderation_flags f
+  join public.profiles p on p.id=f.user_id
+  left join public.messages m on m.id=f.content_id
+  where f.status='open'
+  order by f.created_at desc;
+end;
+$$;
+grant execute on function public.admin_list_moderation_queue() to authenticated;
+
+create or replace function public.admin_moderation_action(
+  p_flag_id bigint,
+  p_action text,
+  p_replacement text default null,
+  p_note text default null
+) returns boolean
+language plpgsql security definer set search_path=public as $$
+declare
+  f public.moderation_flags;
+  note text := nullif(trim(coalesce(p_note,'')),'');
+  replacement text := nullif(trim(coalesce(p_replacement,'')),'');
+  msg text;
+begin
+  if not public.is_admin() then raise exception 'Administrator access required.'; end if;
+  if p_action not in ('review','replace','delete','reset_name') then raise exception 'Invalid moderation action.'; end if;
+  if note is not null then
+    msg := public.validate_macro_text(note, 'feedback', false);
+    if msg is not null then raise exception 'Moderator note rejected: %', msg; end if;
+  end if;
+  select * into f from public.moderation_flags where id=p_flag_id for update;
+  if not found then raise exception 'Moderation flag not found.'; end if;
+
+  if p_action='delete' and f.content_type='message' then
+    delete from public.messages where id=f.content_id;
+  elsif p_action='replace' then
+    if replacement is null then raise exception 'Replacement text is required.'; end if;
+    if f.content_type='message' then
+      msg := public.validate_macro_text(replacement, 'message', false);
+      if msg is not null then raise exception 'Replacement message rejected: %', msg; end if;
+      update public.messages set body=replacement where id=f.content_id;
+      if not found then raise exception 'Message no longer exists.'; end if;
+    elsif f.content_type='display_name' then
+      msg := public.validate_macro_text(replacement, 'display_name', false);
+      if msg is not null then raise exception 'Replacement display name rejected: %', msg; end if;
+      update public.profiles set display_name=replacement, name_change_required=false where id=f.user_id;
+    else raise exception 'Unsupported content type.'; end if;
+  elsif p_action='reset_name' and f.content_type='display_name' then
+    update public.profiles set display_name='MacroSync User', name_change_required=false where id=f.user_id;
+  elsif p_action='review' then
+    null;
+  else
+    raise exception 'That action does not apply to this content type.';
+  end if;
+
+  update public.moderation_flags
+    set status=case when p_action='review' then 'open' else 'resolved' end,
+        reviewed_by=auth.uid(), moderator_note=note, action_taken=p_action,
+        reviewed_at=now(), resolved_at=case when p_action='review' then null else now() end
+  where id=p_flag_id;
+
+  insert into public.moderation_actions(flag_id,admin_id,target_user_id,action,moderator_note)
+  values(f.id,auth.uid(),f.user_id,p_action,note);
+
+  if note is not null then
+    insert into public.notifications(recipient_id,sender_id,type,title,body)
+    values(f.user_id,auth.uid(),'moderation','MacroSync moderation notice',note);
+  end if;
+  return true;
+end;
+$$;
+grant execute on function public.admin_moderation_action(bigint,text,text,text) to authenticated;
+
+-- Scan all existing names/messages in bounded batches. Admins can run this repeatedly as the dataset grows.
+create or replace function public.admin_scan_existing_content(p_limit integer default 1000)
+returns integer language plpgsql security definer set search_path=public as $$
+declare
+  scanned integer := 0;
+  p record; m record; reason text;
+begin
+  if not public.is_admin() then raise exception 'Administrator access required.'; end if;
+  for p in select id,display_name from public.profiles order by id limit greatest(1,least(coalesce(p_limit,1000),10000)) loop
+    reason := public.validate_macro_text(p.display_name, 'display_name', false);
+    if reason is not null then
+      update public.profiles set name_change_required=true where id=p.id;
+      insert into public.moderation_flags(user_id,content_type,content_id,content_key,reason)
+      values(p.id,'display_name',null,'display_name',reason)
+      on conflict (user_id,content_key) do update set reason=excluded.reason,status='open',resolved_at=null;
+    end if;
+    scanned := scanned + 1;
+  end loop;
+  for m in select id,sender_id,body from public.messages order by id limit greatest(1,least(coalesce(p_limit,1000),10000)) loop
+    reason := public.validate_macro_text(m.body, 'message', false);
+    if reason is not null then
+      insert into public.moderation_flags(user_id,content_type,content_id,content_key,reason)
+      values(m.sender_id,'message',m.id,'message:'||m.id,reason)
+      on conflict (user_id,content_key) do update set reason=excluded.reason,status='open',resolved_at=null;
+    end if;
+    scanned := scanned + 1;
+  end loop;
+  return scanned;
+end;
+$$;
+grant execute on function public.admin_scan_existing_content(integer) to authenticated;
+
+-- Remove the obsolete two-argument moderation overload from databases upgraded from older MacroSync builds.
+-- All current callers use the explicit three-argument signature, so this is safe without CASCADE.
+drop function if exists public.validate_macro_text(text, text);
+
+-- Account deletion: all application rows cascade from auth.users.
+create or replace function public.delete_my_account()
+returns boolean language plpgsql security definer set search_path=public,auth as $$
+begin
+  if auth.uid() is null then raise exception 'You must be signed in.'; end if;
+  delete from auth.users where id=auth.uid();
+  return true;
+end;
+$$;
+revoke all on function public.delete_my_account() from public;
+grant execute on function public.delete_my_account() to authenticated;
+
+-- Privacy-safe profile search: email is returned only when the profile owner allows email discovery.
+create or replace function public.search_people(p_query text)
+returns table(id uuid,display_name text,email text,role text,business_name text)
+language sql stable security definer set search_path=public as $$
+  select p.id,p.display_name,
+         case when p.email_search_enabled then p.email else null end,
+         p.role,p.business_name
+  from public.profiles p
+  where p.id <> auth.uid()
+    and (trim(coalesce(p_query,''))='' or p.display_name ilike '%'||trim(p_query)||'%' or (p.email_search_enabled and p.email ilike '%'||trim(p_query)||'%'))
+  order by p.display_name
+  limit 50;
+$$;
+grant execute on function public.search_people(text) to authenticated;
 
 -- ================================================================
 -- Enhanced non-AI moderation + immutable age declaration
@@ -838,12 +1043,6 @@ begin
 end;
 $$;
 
--- Keep the legacy two-argument signature compatible while routing it through the
--- enhanced moderation implementation.
-create or replace function public.validate_macro_text(p_text text, p_kind text)
-returns text language sql immutable as $$
-  select public.validate_macro_text(p_text, p_kind, false);
-$$;
 
 -- Existing trigger remains intact; only its function body is replaced.
 create or replace function public.validate_profile_display_name()
@@ -980,3 +1179,135 @@ $$;
 drop trigger if exists clear_name_change_required on public.profiles;
 create trigger clear_name_change_required before update of display_name on public.profiles
 for each row execute function public.clear_name_change_required();
+
+
+-- ================================================================
+-- User reports + account moderation controls
+-- ================================================================
+alter table public.profiles add column if not exists account_status text not null default 'active';
+-- Normalize any pre-existing invalid values before applying the constraint.
+update public.profiles set account_status='active' where account_status is null or account_status not in ('active','suspended','banned');
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname='profiles_account_status_check') then
+    alter table public.profiles add constraint profiles_account_status_check check (account_status in ('active','suspended','banned'));
+  end if;
+end $$;
+alter table public.profiles add column if not exists moderation_status_note text;
+alter table public.profiles add column if not exists moderation_status_until timestamptz;
+
+create table if not exists public.user_reports (
+  id bigint generated by default as identity primary key,
+  reporter_id uuid not null references auth.users(id) on delete cascade,
+  reported_user_id uuid not null references auth.users(id) on delete cascade,
+  message_id bigint references public.messages(id) on delete set null,
+  reason text not null check (char_length(trim(reason)) between 3 and 1000),
+  status text not null default 'open' check (status in ('open','reviewed','resolved','dismissed')),
+  admin_note text,
+  reviewed_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  reviewed_at timestamptz,
+  check (reporter_id <> reported_user_id)
+);
+create index if not exists user_reports_status_created_idx on public.user_reports(status, created_at desc);
+create index if not exists user_reports_reported_user_idx on public.user_reports(reported_user_id, created_at desc);
+alter table public.user_reports enable row level security;
+drop policy if exists "reports insert own" on public.user_reports;
+drop policy if exists "reports own read" on public.user_reports;
+drop policy if exists "reports admin read" on public.user_reports;
+drop policy if exists "reports admin update" on public.user_reports;
+create policy "reports insert own" on public.user_reports for insert to authenticated with check (auth.uid()=reporter_id and reporter_id<>reported_user_id);
+create policy "reports own read" on public.user_reports for select to authenticated using (auth.uid()=reporter_id);
+create policy "reports admin read" on public.user_reports for select to authenticated using (public.is_admin());
+create policy "reports admin update" on public.user_reports for update to authenticated using (public.is_admin()) with check (public.is_admin());
+
+create or replace function public.report_message(p_message_id bigint, p_reason text)
+returns bigint language plpgsql security definer set search_path=public as $$
+declare m public.messages; rid bigint;
+ r text := nullif(trim(coalesce(p_reason,'')),'');
+begin
+ if auth.uid() is null then raise exception 'You must be signed in.'; end if;
+ if r is null or char_length(r)<3 or char_length(r)>1000 then raise exception 'Please provide a short reason for the report.'; end if;
+ select * into m from public.messages where id=p_message_id;
+ if not found then raise exception 'Message not found.'; end if;
+ if m.recipient_id<>auth.uid() then raise exception 'You can only report messages sent to you.'; end if;
+ if exists(select 1 from public.user_reports where reporter_id=auth.uid() and message_id=p_message_id and status in ('open','reviewed')) then
+   raise exception 'You have already reported this message.';
+ end if;
+ insert into public.user_reports(reporter_id,reported_user_id,message_id,reason) values(auth.uid(),m.sender_id,m.id,r) returning id into rid;
+ return rid;
+end;
+$$;
+grant execute on function public.report_message(bigint,text) to authenticated;
+
+create or replace function public.admin_list_reports()
+returns table(report_id bigint, reporter_id uuid, reporter_name text, reported_user_id uuid, reported_name text, message_id bigint, message_content text, reason text, status text, created_at timestamptz, admin_note text)
+language plpgsql security definer set search_path=public as $$
+begin
+ if not public.is_admin() then raise exception 'Administrator access required.'; end if;
+ return query select r.id,r.reporter_id,coalesce(rp.display_name,'Unknown'),r.reported_user_id,coalesce(tp.display_name,'Unknown'),r.message_id,m.body,r.reason,r.status,r.created_at,r.admin_note
+ from public.user_reports r join public.profiles rp on rp.id=r.reporter_id join public.profiles tp on tp.id=r.reported_user_id left join public.messages m on m.id=r.message_id
+ where r.status in ('open','reviewed') order by r.created_at desc;
+end;
+$$;
+grant execute on function public.admin_list_reports() to authenticated;
+
+create or replace function public.admin_set_account_status(p_user_id uuid, p_status text, p_note text default null, p_until timestamptz default null)
+returns boolean language plpgsql security definer set search_path=public as $$
+declare n text := nullif(trim(coalesce(p_note,'')), '');
+begin
+ if not public.is_admin() then raise exception 'Administrator access required.'; end if;
+ if p_status not in ('active','suspended','banned') then raise exception 'Invalid account status.'; end if;
+ if p_user_id=auth.uid() then raise exception 'You cannot suspend or ban your own administrator account.'; end if;
+ if n is not null then
+   if public.validate_macro_text(n, 'feedback', false) is not null then raise exception 'Moderation note contains prohibited content.'; end if;
+ end if;
+ update public.profiles set account_status=p_status, moderation_status_note=n, moderation_status_until=case when p_status='suspended' then p_until else null end where id=p_user_id;
+ if not found then raise exception 'User not found.'; end if;
+ insert into public.moderation_actions(flag_id,admin_id,target_user_id,action,moderator_note) values(null,auth.uid(),p_user_id,'account_status',coalesce(n,'Account status changed to '||p_status||'.'));
+ insert into public.notifications(recipient_id,sender_id,type,title,body) values(p_user_id,auth.uid(),'moderation','Account status update',coalesce(n,'Your MacroSync account status is now '||p_status||'.'));
+ return true;
+end;
+$$;
+-- Add the new audit action type safely.
+do $$ begin
+  if exists(select 1 from pg_constraint where conname='moderation_actions_action_check') then
+    alter table public.moderation_actions drop constraint moderation_actions_action_check;
+  end if;
+  alter table public.moderation_actions add constraint moderation_actions_action_check check (action in ('review','replace','delete','reset_name','account_status'));
+end $$;
+grant execute on function public.admin_set_account_status(uuid,text,text,timestamptz) to authenticated;
+
+create or replace function public.admin_update_report(p_report_id bigint, p_status text, p_note text default null)
+returns boolean language plpgsql security definer set search_path=public as $$
+declare n text := nullif(trim(coalesce(p_note,'')),'');
+begin
+ if not public.is_admin() then raise exception 'Administrator access required.'; end if;
+ if p_status not in ('open','reviewed','resolved','dismissed') then raise exception 'Invalid report status.'; end if;
+ if n is not null and public.validate_macro_text(n, 'feedback', false) is not null then raise exception 'Admin note contains prohibited content.'; end if;
+ update public.user_reports set status=p_status, admin_note=n, reviewed_by=auth.uid(), reviewed_at=now() where id=p_report_id;
+ if not found then raise exception 'Report not found.'; end if;
+ return true;
+end;
+$$;
+grant execute on function public.admin_update_report(bigint,text,text) to authenticated;
+
+-- Enforce suspended/banned accounts at the database boundary for messaging.
+create or replace function public.send_message(p_recipient_id uuid, p_body text)
+returns public.messages language plpgsql security definer set search_path=public as $$
+declare new_message public.messages; validation_message text; my_status text; recipient_status text;
+begin
+ if auth.uid() is null then raise exception 'You must be signed in to send messages.'; end if;
+ select account_status into my_status from public.profiles where id=auth.uid();
+ if coalesce(my_status,'active')='banned' then raise exception 'Your account is banned.'; end if;
+ if coalesce(my_status,'active')='suspended' and exists(select 1 from public.profiles where id=auth.uid() and moderation_status_until is null) then raise exception 'Your account is suspended.'; end if;
+ select account_status into recipient_status from public.profiles where id=p_recipient_id;
+ if coalesce(recipient_status,'active')<>'active' then raise exception 'This user cannot receive messages right now.'; end if;
+ if p_recipient_id=auth.uid() then raise exception 'You cannot message yourself.'; end if;
+ validation_message:=public.validate_macro_text(p_body, 'message', false); if validation_message is not null then raise exception '%',validation_message; end if;
+ if not exists(select 1 from public.friend_connections c where c.status='accepted' and ((c.requester_id=auth.uid() and c.addressee_id=p_recipient_id) or (c.requester_id=p_recipient_id and c.addressee_id=auth.uid()))) then raise exception 'You can only message an accepted friend.'; end if;
+ insert into public.messages(sender_id,recipient_id,body) values(auth.uid(),p_recipient_id,trim(p_body)) returning * into new_message;
+ if exists(select 1 from public.profiles p where p.id=p_recipient_id and p.message_notifications_enabled=true) then insert into public.notifications(recipient_id,sender_id,type,title,body,message_id) values(p_recipient_id,auth.uid(),'message','New message',trim(p_body),new_message.id); end if;
+ return new_message;
+end;
+$$;
+grant execute on function public.send_message(uuid,text) to authenticated;
