@@ -60,26 +60,32 @@ const PulsePlateApp = (() => {
   // Display names are intentionally stricter than ordinary messages.  Keep this
   // list focused on clearly abusive, sexual, or otherwise inappropriate terms.
   // The database trigger is the final enforcement layer; this provides instant UI feedback.
-  const BLOCKED_NAME_TERMS = [
-    'fuck','fucker','fucking','shit','shitter','bitch','bitches','asshole','bastard','cunt',
-    'dick','pussy','cock','slut','whore','porn','pornography','nude','nudes','naked','sex',
-    'sexual','sexy','onlyfans','rape','rapist','pedo','pedophile','groomer','kill','kys','nazi',
-    'slur'
+  // Local first-pass moderation. The database performs the authoritative check.
+  // Text is normalized for case, accents, separators and common leetspeak so simple
+  // obfuscation does not bypass the filter.
+  const PROFANITY_TERMS = [
+    'fuck','fucker','fucking','motherfucker','shit','shitty','bullshit','bitch','bitches',
+    'asshole','dumbass','bastard','cunt','dick','dickhead','pussy','cock','slut','whore',
+    'damn','hell','crap','piss','jackass','asshat','prick','twat','wanker'
   ];
-  const BLOCKED_MESSAGE_TERMS = ['porn','pornography','nude','nudes','sexually explicit','sexual services','child sexual','minor sexual'];
-  // Hate/discrimination filter. Normalization catches common punctuation/spacing evasion.
-  const BLOCKED_HATE_TERMS = [
+  const HATE_TERMS = [
     'nigger','niggers','nigga','niggas','chink','chinks','spic','spics','kike','kikes',
     'gook','gooks','wetback','wetbacks','beaner','beaners','raghead','ragheads','coon','coons',
     'fag','fags','faggot','faggots','dyke','dykes','tranny','trannies'
   ];
-  function normalizedModerationText(text) {
-    return String(text || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+  const SEXUAL_TERMS = ['porn','pornography','nude','nudes','naked','onlyfans','sexual services','sexually explicit','child sexual','minor sexual','sexting'];
+  const LEET_MAP = { '@':'a','4':'a','3':'e','1':'i','!':'i','0':'o','$':'s','5':'s','7':'t','+':'t','8':'b'};
+  function normalizeModerationText(text) {
+    return String(text || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'')
+      .replace(/[0134578@$!+]/g, c => LEET_MAP[c] || c).replace(/[^a-z0-9]+/g,'');
   }
-  function containsHateTerm(text) {
-    const lower = String(text || '').toLowerCase();
-    const normalized = normalizedModerationText(text);
-    return BLOCKED_HATE_TERMS.some(term => lower.split(/[^a-z0-9]+/).includes(term) || normalized.includes(term));
+  function tokenModerationText(text) {
+    return String(text || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'')
+      .replace(/[0134578@$!+]/g, c => LEET_MAP[c] || c).replace(/[^a-z0-9]+/g,' ').trim();
+  }
+  function containsTerm(text, terms) {
+    const normalized=normalizeModerationText(text), tokens=tokenModerationText(text).split(/\s+/).filter(Boolean);
+    return terms.some(term => tokens.includes(term) || normalized.includes(term));
   }
   const DOXXING_PATTERNS = [
     /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,
@@ -88,26 +94,23 @@ const PulsePlateApp = (() => {
     /\b(?:\+?\d[\d\s().-]{7,}\d)\b/g,
     /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi
   ];
+  function resetPatterns(){ DOXXING_PATTERNS.forEach(rx=>{rx.lastIndex=0;}); }
   function validateDisplayName(text) {
-    const value = String(text || '').trim();
-    if (!value) return 'Please enter a display name.';
-    if (value.length > 80) return 'Display names must be 80 characters or fewer.';
-    const lower=value.toLowerCase();
-    const normalized = lower.replace(/[^a-z0-9]/g, '');
-    if (BLOCKED_NAME_TERMS.some(term => lower.includes(term) || normalized.includes(term)) || containsHateTerm(value)) return 'That display name contains language or content that is not allowed.';
-    if (DOXXING_PATTERNS.some(rx => rx.test(value))) return 'Display names cannot contain contact or location information.';
-    DOXXING_PATTERNS.forEach(rx => { rx.lastIndex=0; });
-    return null;
+    const value=String(text||'').trim();
+    if(!value) return 'Please enter a display name.';
+    if(value.length>80) return 'Display names must be 80 characters or fewer.';
+    if(containsTerm(value,PROFANITY_TERMS)||containsTerm(value,HATE_TERMS)||containsTerm(value,SEXUAL_TERMS)) return 'That display name contains language or content that is not allowed.';
+    if(DOXXING_PATTERNS.some(rx=>rx.test(value))){resetPatterns();return 'Display names cannot contain contact or location information.';} resetPatterns(); return null;
   }
-  function validateMessageText(text) {
-    const value=String(text||'').trim(); const lower=value.toLowerCase();
-    if (!value) return 'Message cannot be empty.';
-    if (value.length > 4000) return 'Messages must be 4000 characters or fewer.';
-    if (BLOCKED_MESSAGE_TERMS.some(term=>lower.includes(term))) return 'This message contains sexual or otherwise inappropriate content and cannot be sent.';
-    if (containsHateTerm(value)) return 'This message contains hateful or discriminatory language and cannot be sent.';
-    if (DOXXING_PATTERNS.some(rx=>rx.test(value))) { DOXXING_PATTERNS.forEach(rx=>{rx.lastIndex=0;}); return 'This message appears to contain personal information. Please remove IP addresses, home addresses, phone numbers, or email addresses.'; }
-    DOXXING_PATTERNS.forEach(rx=>{rx.lastIndex=0;});
-    return null;
+  function validateMessageText(text, isMinor=false) {
+    const value=String(text||'').trim();
+    if(!value) return 'Message cannot be empty.';
+    if(value.length>4000) return 'Messages must be 4000 characters or fewer.';
+    if(containsTerm(value,HATE_TERMS)) return 'This message contains hateful or discriminatory language and cannot be sent.';
+    if(containsTerm(value,SEXUAL_TERMS)) return 'This message contains sexual or otherwise inappropriate content and cannot be sent.';
+    if(isMinor && containsTerm(value,PROFANITY_TERMS)) return 'Profanity is not available for accounts under 18.';
+    if(!isMinor && containsTerm(value,PROFANITY_TERMS)) return 'This message contains profanity that is not allowed on MacroSync.';
+    if(DOXXING_PATTERNS.some(rx=>rx.test(value))){resetPatterns();return 'This message appears to contain personal information. Please remove IP addresses, home addresses, phone numbers, or email addresses.';} resetPatterns(); return null;
   }
 
   async function init() {
@@ -118,6 +121,7 @@ const PulsePlateApp = (() => {
       user = data.session.user;
       weekStart = startOfWeek(selectedDate);
       const profile = await ensureProfile();
+      if (profile?.date_of_birth === null || profile?.date_of_birth === undefined) await requireAgeDeclaration();
       wireGlobalAuth();
       if (!profile?.onboarding_complete) {
         await showOnboarding(profile);
@@ -129,6 +133,20 @@ const PulsePlateApp = (() => {
       console.error(error);
       document.body.insertAdjacentHTML('afterbegin', `<div class="alpha-error">MacroSync could not initialize. ${escapeHtml(error.message)}</div>`);
     }
+  }
+
+  function ageInYears(dob) {
+    const d=new Date(`${dob}T00:00:00`), now=new Date();
+    let age=now.getFullYear()-d.getFullYear();
+    const beforeBirthday=(now.getMonth()<d.getMonth()) || (now.getMonth()===d.getMonth() && now.getDate()<d.getDate());
+    if(beforeBirthday) age--;
+    return age;
+  }
+  async function requireAgeDeclaration() {
+    const overlay=document.createElement('div'); overlay.className='modal-overlay';
+    overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><p class="eyebrow">Age declaration required</p><h2>When were you born?</h2><p class="page-copy">MacroSync uses your date of birth only to apply age-appropriate content rules. It is an age declaration, not identity verification. Once saved, you cannot change it yourself.</p><form class="settings-stack" data-age-form><div class="field"><label for="declaredDob">Date of birth</label><input id="declaredDob" type="date" required max="${new Date().toISOString().slice(0,10)}"></div><button class="primary-button" type="submit">Save date of birth</button><p class="settings-status" data-age-status role="status"></p></form></section>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('[data-age-form]').addEventListener('submit',async e=>{e.preventDefault();const status=overlay.querySelector('[data-age-status]');const dob=overlay.querySelector('#declaredDob').value;if(!dob){status.textContent='Enter your date of birth.';return;}const age=ageInYears(dob);if(age<13){status.textContent='MacroSync accounts are not available for users under 13.';return;}if(age>120){status.textContent='Please enter a valid date of birth.';return;}status.textContent='Saving…';const {error}=await supabase.from('profiles').update({date_of_birth:dob}).eq('id',user.id).is('date_of_birth',null);if(error){status.textContent=error.message;return;}overlay.remove();window.location.reload();});
   }
 
   async function ensureProfile() {
@@ -1273,9 +1291,7 @@ const PulsePlateApp = (() => {
       if (thread) thread.innerHTML = '<p class="page-copy">Select a friend to view messages.</p>';
       return;
     }
-    const { data, error } = await supabase.from('messages').select('*')
-      .or(`and(sender_id.eq.${user.id},recipient_id.eq.${selectedFriendId}),and(sender_id.eq.${selectedFriendId},recipient_id.eq.${user.id})`)
-      .order('created_at');
+    const { data, error } = await supabase.rpc('get_conversation_messages', { p_friend_id: selectedFriendId });
     if (error) throw error;
     setText('[data-chat-title]', personById(selectedFriendId)?.display_name || 'Select a friend');
     thread.innerHTML = data?.length
@@ -1294,7 +1310,10 @@ const PulsePlateApp = (() => {
 
   async function sendMessage() {
     if (!selectedFriendId) { alert('Select a friend first.'); return; }
-    const input = $('[data-message-text]'); const body = input?.value.trim(); const validation = validateMessageText(body); if (validation) { alert(validation); return; }
+    const input = $('[data-message-text]'); const body = input?.value.trim();
+    const { data: ageProfile } = await supabase.from('profiles').select('date_of_birth').eq('id', user.id).single();
+    const isMinor = ageProfile?.date_of_birth ? ageInYears(ageProfile.date_of_birth) < 18 : true;
+    const validation = validateMessageText(body, isMinor); if (validation) { alert(validation); return; }
     const { error } = await supabase.rpc('send_message', { p_recipient_id: selectedFriendId, p_body: body });
     if (error) { alert(error.message); return; }
     input.value = '';

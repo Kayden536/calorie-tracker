@@ -13,6 +13,8 @@
   const confirmPassword = document.querySelector('#confirmPassword');
   const email = document.querySelector('#email');
   const displayName = document.querySelector('#displayName');
+  const dobField = document.querySelector('#dobField');
+  const dateOfBirth = document.querySelector('#dateOfBirth');
 
   let supabase;
   let mode = 'login';
@@ -47,6 +49,7 @@
     loginTab.hidden = reset;
     signupTab.hidden = reset;
     nameField.hidden = !signup;
+    if (dobField) dobField.hidden = !signup;
     passwordField.hidden = false;
     confirmPasswordField.hidden = !reset;
     forgotPassword.hidden = signup || reset;
@@ -149,11 +152,16 @@
       const address = email.value.trim();
       const pass = password.value;
       const name = displayName.value.trim() || 'MacroSync User';
+      const dob = dateOfBirth?.value || '';
       if (mode === 'signup') {
-        const blocked = ['fuck','fucker','fucking','shit','shitter','bitch','bitches','asshole','bastard','cunt','dick','pussy','cock','slut','whore','porn','pornography','nude','nudes','naked','sex','sexual','sexy','onlyfans','rape','rapist','pedo','pedophile','groomer','kill','kys','nazi','slur'];
-        const normalizedName = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const blocked = ['fuck','fucker','fucking','motherfucker','shit','shitty','bullshit','bitch','bitches','asshole','dumbass','bastard','cunt','dick','dickhead','pussy','cock','slut','whore','damn','crap','piss','jackass','asshat','prick','twat','wanker','porn','pornography','nude','nudes','naked','sex','sexual','sexy','onlyfans','sexting','rape','rapist','pedo','pedophile','groomer','nigger','niggers','nigga','niggas','chink','chinks','spic','spics','kike','kikes','gook','gooks','wetback','wetbacks','beaner','beaners','raghead','ragheads','coon','coons','fag','fags','faggot','faggots','dyke','dykes','tranny','trannies'];
+        const leet = {'@':'a','4':'a','3':'e','1':'i','!':'i','0':'o','$':'s','5':'s','7':'t','+':'t','8':'b'};
+        const normalize = value => value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[0134578@$!+]/g,c=>leet[c]||c).replace(/[^a-z0-9]/g,'');
+        const normalizedName = normalize(name);
         const tokenName = name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
         if (!name) throw new Error('Please enter a display name.');
+        if (!dob) throw new Error('Please enter your date of birth.');
+        const birth=new Date(`${dob}T00:00:00`), today=new Date(); let age=today.getFullYear()-birth.getFullYear(); if(today.getMonth()<birth.getMonth() || (today.getMonth()===birth.getMonth() && today.getDate()<birth.getDate())) age--; if(age<13) throw new Error('MacroSync accounts are not available for users under 13.'); if(age>120) throw new Error('Please enter a valid date of birth.');
         if (name.length > 80) throw new Error('Display names must be 80 characters or fewer.');
         if (blocked.some(term => tokenName.split(/\s+/).includes(term) || normalizedName === term || normalizedName.includes(term))) {
           throw new Error('That display name contains language or content that is not allowed.');
@@ -165,7 +173,7 @@
         result = await supabase.auth.signUp({
           email: address,
           password: pass,
-          options: { data: { display_name: name } }
+          options: { data: { display_name: name, date_of_birth: dob } }
         });
         if (!result.error && !result.data.session) {
           status.textContent = 'Account created. Check your email to confirm your account, then log in.';

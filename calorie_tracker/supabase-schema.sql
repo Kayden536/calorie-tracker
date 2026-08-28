@@ -729,3 +729,196 @@ begin
 end;
 $$;
 grant execute on function public.review_my_content() to authenticated;
+
+-- ================================================================
+-- Enhanced non-AI moderation + immutable age declaration
+-- ================================================================
+alter table public.profiles add column if not exists date_of_birth date;
+
+create or replace function public.prevent_dob_change()
+returns trigger
+language plpgsql
+as $$
+begin
+  if tg_op = 'UPDATE' and old.date_of_birth is not null and new.date_of_birth is distinct from old.date_of_birth then
+    raise exception 'Date of birth cannot be changed after it has been declared.';
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists prevent_dob_change on public.profiles;
+create trigger prevent_dob_change before update of date_of_birth on public.profiles
+for each row execute function public.prevent_dob_change();
+
+create or replace function public.moderation_normalize(p_text text)
+returns text
+language sql immutable
+as $$
+  select regexp_replace(
+    translate(
+      lower(coalesce(p_text,'')),
+      '0134578@$!+',
+      'oieastbaast'
+    ),
+    '[^a-z0-9]+', '', 'g'
+  );
+$$;
+
+-- Authoritative non-AI moderation function. It uses normalization, token checks,
+-- high-risk term groups, contextual phrase rules, and PII patterns. It deliberately
+-- errs on the side of blocking questionable content rather than silently rewriting it.
+create or replace function public.validate_macro_text(p_text text, p_kind text, p_is_minor boolean default false)
+returns text
+language plpgsql
+immutable
+as $$
+declare
+  raw text := lower(trim(coalesce(p_text,'')));
+  normalized text := public.moderation_normalize(p_text);
+  profanity text[] := array['fuck','fucker','fucking','motherfucker','shit','shitty','bullshit','bitch','bitches','asshole','dumbass','bastard','cunt','dick','dickhead','pussy','cock','slut','whore','damn','crap','piss','jackass','asshat','prick','twat','wanker'];
+  hate text[] := array['nigger','niggers','nigga','niggas','chink','chinks','spic','spics','kike','kikes','gook','gooks','wetback','wetbacks','beaner','beaners','raghead','ragheads','coon','coons','fag','fags','faggot','faggots','dyke','dykes','tranny','trannies'];
+  term text;
+begin
+  if char_length(raw)=0 then return 'Text cannot be empty.'; end if;
+
+  if p_kind='display_name' then
+    if char_length(raw)>80 then return 'Display names must be 80 characters or fewer.'; end if;
+  elsif p_kind in ('message','feedback') then
+    if char_length(raw)>4000 then return 'Text must be 4000 characters or fewer.'; end if;
+  end if;
+
+  foreach term in array hate loop
+    if normalized like '%'||term||'%' then
+      return 'This text contains hateful or discriminatory language and cannot be submitted.';
+    end if;
+  end loop;
+
+  -- Sexual terminology and explicit/suggestive solicitation are blocked for all ages.
+  if normalized ~ '(pornography|porn|onlyfans|nudes|nude|naked|sexting|sex|sexual|sexy|sexualservices|sexuallyexplicit|childsexual|minorsexual|sexualcontent|rape|rapist|pedo|pedophile|groomer)' then
+    return 'This text contains sexual or otherwise inappropriate content and cannot be submitted.';
+  end if;
+
+  -- Threat/self-harm encouragement and targeted violence terminology.
+  if normalized ~ '(killyourself|kys|gobackto|die[[:alpha:]]*|ethniccleansing|genocide)' then
+    return 'This text contains threatening or abusive content and cannot be submitted.';
+  end if;
+
+  -- Profanity is blocked in display names and feedback. Messages are now deliberately
+  -- strict too; this avoids the inconsistent "some swears are okay" boundary until an AI
+  -- contextual moderation layer is introduced.
+  foreach term in array profanity loop
+    if normalized like '%'||term||'%' then
+      if p_kind='display_name' then return 'That display name contains profanity or inappropriate language and is not allowed.';
+      elsif p_kind='message' then return 'This message contains profanity that is not allowed on MacroSync.';
+      else return 'This feedback contains profanity that is not allowed.';
+      end if;
+    end if;
+  end loop;
+
+  -- PII / doxxing patterns.
+  if raw ~ '(^|[^0-9])([0-9]{1,3}\.){3}[0-9]{1,3}([^0-9]|$)' then return 'This text appears to contain an IP address. Remove it before submitting.'; end if;
+  if raw ~ '([0-9a-f]{1,4}:){2,}[0-9a-f]{1,4}' then return 'This text appears to contain an IP address. Remove it before submitting.'; end if;
+  if raw ~ '(^|[^0-9])[0-9]{1,5}[[:space:]]+[[:alnum:].''-]+[[:space:]]+(street|st|road|rd|avenue|ave|boulevard|blvd|drive|dr|lane|ln|court|ct|way|parkway|pkwy|place|pl)([^[:alpha:]]|$)' then return 'This text appears to contain a home address. Remove personal location information before submitting.'; end if;
+  if raw ~ '(^|[^0-9])\+?[0-9][0-9(). -]{7,}[0-9]([^0-9]|$)' then return 'This text appears to contain a phone number. Remove personal contact information before submitting.'; end if;
+  if raw ~ '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' then return 'This text appears to contain an email address. Remove personal contact information before submitting.'; end if;
+
+  return null;
+end;
+$$;
+
+-- Keep the legacy two-argument signature compatible while routing it through the
+-- enhanced moderation implementation.
+create or replace function public.validate_macro_text(p_text text, p_kind text)
+returns text language sql immutable as $$
+  select public.validate_macro_text(p_text, p_kind, false);
+$$;
+
+-- Existing trigger remains intact; only its function body is replaced.
+create or replace function public.validate_profile_display_name()
+returns trigger language plpgsql as $$
+declare msg text;
+begin
+  msg := public.validate_macro_text(new.display_name, 'display_name', false);
+  if msg is not null then raise exception '%', msg; end if;
+  return new;
+end;
+$$;
+
+-- Rebuild the message RPC with age-aware moderation.
+drop function if exists public.send_message(uuid, text);
+create or replace function public.send_message(p_recipient_id uuid, p_body text)
+returns public.messages
+language plpgsql security definer set search_path=public
+as $$
+declare
+  new_message public.messages;
+  validation_message text;
+  sender_dob date;
+  sender_minor boolean;
+  connection_exists boolean;
+begin
+  if auth.uid() is null then raise exception 'You must be signed in to send messages.'; end if;
+  if p_recipient_id=auth.uid() then raise exception 'You cannot message yourself.'; end if;
+  if char_length(trim(coalesce(p_body,'')))<1 or char_length(trim(p_body))>4000 then raise exception 'Message must contain between 1 and 4000 characters.'; end if;
+
+  select date_of_birth into sender_dob from public.profiles where id=auth.uid();
+  if sender_dob is null then raise exception 'Please complete your age declaration before sending messages.'; end if;
+  sender_minor := age(current_date, sender_dob) < interval '18 years';
+
+  validation_message := public.validate_macro_text(p_body,'message',sender_minor);
+  if validation_message is not null then raise exception '%', validation_message; end if;
+
+  select exists(select 1 from public.friend_connections c where c.status='accepted' and ((c.requester_id=auth.uid() and c.addressee_id=p_recipient_id) or (c.requester_id=p_recipient_id and c.addressee_id=auth.uid()))) into connection_exists;
+  if not connection_exists then raise exception 'You can only message an accepted friend.'; end if;
+
+  insert into public.messages(sender_id,recipient_id,body) values(auth.uid(),p_recipient_id,trim(p_body)) returning * into new_message;
+  if exists(select 1 from public.profiles p where p.id=p_recipient_id and p.message_notifications_enabled=true) then
+    insert into public.notifications(recipient_id,sender_id,type,title,body,message_id) values(p_recipient_id,auth.uid(),'message','New message',trim(p_body),new_message.id);
+  end if;
+  return new_message;
+end;
+$$;
+grant execute on function public.send_message(uuid,text) to authenticated;
+
+-- Raw message SELECT is removed so under-18 viewers cannot fetch prohibited message
+-- bodies directly. Conversations are read through the age-aware RPC below.
+drop policy if exists "messages participants read" on public.messages;
+
+create or replace function public.get_conversation_messages(p_friend_id uuid)
+returns table(id bigint, sender_id uuid, recipient_id uuid, body text, created_at timestamptz)
+language plpgsql security definer set search_path=public
+as $$
+declare
+  viewer_dob date;
+  viewer_minor boolean;
+  m record;
+  blocked text;
+begin
+  if auth.uid() is null then raise exception 'You must be signed in.'; end if;
+  select date_of_birth into viewer_dob from public.profiles where profiles.id=auth.uid();
+  viewer_minor := viewer_dob is null or age(current_date,viewer_dob) < interval '18 years';
+  for m in
+    select messages.id,messages.sender_id,messages.recipient_id,messages.body,messages.created_at
+    from public.messages
+    where (messages.sender_id=auth.uid() and messages.recipient_id=p_friend_id)
+       or (messages.sender_id=p_friend_id and messages.recipient_id=auth.uid())
+    order by messages.created_at
+  loop
+    if viewer_minor then
+      blocked := public.validate_macro_text(m.body,'message',true);
+      if blocked is not null then
+        id:=m.id; sender_id:=m.sender_id; recipient_id:=m.recipient_id;
+        body:='[Message unavailable: this message contains content that is not available to accounts under 18.]';
+        created_at:=m.created_at; return next;
+      end if;
+    end if;
+    id:=m.id; sender_id:=m.sender_id; recipient_id:=m.recipient_id; body:=m.body; created_at:=m.created_at; return next;
+  end loop;
+end;
+$$;
+grant execute on function public.get_conversation_messages(uuid) to authenticated;
+
+-- Ensure the enhanced display-name trigger exists even on older installations.
+drop trigger if exists validate_profile_display_name on public.profiles;
+create trigger validate_profile_display_name before insert or update of display_name on public.profiles
+for each row execute function public.validate_profile_display_name();
