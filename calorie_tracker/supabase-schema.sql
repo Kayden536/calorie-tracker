@@ -880,6 +880,39 @@ end;
 $$;
 grant execute on function public.send_message(uuid,text) to authenticated;
 
+-- Reliable user-owned message deletion RPC. This avoids client-side RLS/schema-cache
+-- inconsistencies while still enforcing that only the sender can delete a message.
+create or replace function public.delete_message(p_message_id bigint)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  deleted_count integer;
+begin
+  if auth.uid() is null then
+    raise exception 'You must be signed in to delete messages.';
+  end if;
+
+  delete from public.messages
+  where id = p_message_id
+    and sender_id = auth.uid();
+
+  get diagnostics deleted_count = row_count;
+  return deleted_count = 1;
+end;
+$$;
+
+revoke all on function public.delete_message(bigint) from public;
+grant execute on function public.delete_message(bigint) to authenticated;
+
+-- Keep direct DELETE available for the client as a second, RLS-protected path.
+drop policy if exists "messages sender delete" on public.messages;
+create policy "messages sender delete" on public.messages
+for delete to authenticated
+using (auth.uid() = sender_id);
+
 -- Raw message SELECT is removed so under-18 viewers cannot fetch prohibited message
 -- bodies directly. Conversations are read through the age-aware RPC below.
 drop policy if exists "messages participants read" on public.messages;

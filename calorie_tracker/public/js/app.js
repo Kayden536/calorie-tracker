@@ -470,8 +470,9 @@ const PulsePlateApp = (() => {
     overlay.querySelectorAll('[data-delete-flagged-message]').forEach(btn => btn.addEventListener('click', async () => {
       if (!confirm('Delete this message permanently?')) return;
       const flag = btn.closest('[data-moderation-flag]');
-      const { error: delError } = await supabase.from('messages').delete().eq('id', btn.dataset.deleteFlaggedMessage).eq('sender_id', user.id);
+      const { data: deleted, error: delError } = await supabase.rpc('delete_message', { p_message_id: Number(btn.dataset.deleteFlaggedMessage) });
       if (delError) { alert(delError.message); return; }
+      if (!deleted) { alert('The message could not be deleted.'); return; }
       await supabase.from('moderation_flags').update({ status:'resolved', resolved_at:new Date().toISOString() }).eq('id', flag.dataset.moderationFlag).eq('user_id', user.id);
       flag.remove();
       if (!overlay.querySelector('[data-moderation-flag]')) overlay.remove();
@@ -1300,8 +1301,9 @@ const PulsePlateApp = (() => {
     thread.querySelectorAll('[data-delete-message]').forEach(button => {
       button.onclick = async () => {
         if (!confirm('Delete this message permanently?')) return;
-        const { error: deleteError } = await supabase.from('messages').delete().eq('id', button.dataset.deleteMessage).eq('sender_id', user.id);
+        const { data: deleted, error: deleteError } = await supabase.rpc('delete_message', { p_message_id: Number(button.dataset.deleteMessage) });
         if (deleteError) { alert(deleteError.message); return; }
+        if (!deleted) { alert('The message could not be deleted. It may already be gone or you may not own it.'); return; }
         await renderMessages();
       };
     });
