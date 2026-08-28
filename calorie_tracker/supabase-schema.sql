@@ -705,15 +705,25 @@ declare
   p public.profiles;
   m public.messages;
   reason_text text;
+  has_bad_name boolean := false;
 begin
   if auth.uid() is null then raise exception 'You must be signed in.'; end if;
   select * into p from public.profiles where id = auth.uid();
+
   reason_text := public.validate_macro_text(p.display_name, 'display_name');
   if reason_text is not null then
+    has_bad_name := true;
+    update public.profiles set name_change_required = true where id = auth.uid();
     insert into public.moderation_flags(user_id,content_type,content_id,content_key,reason)
     values(auth.uid(),'display_name',null,'display_name',reason_text)
     on conflict (user_id,content_key) do update set reason=excluded.reason, status='open', resolved_at=null;
+  else
+    update public.profiles set name_change_required = false where id = auth.uid();
+    update public.moderation_flags
+      set status='resolved', resolved_at=coalesce(resolved_at, now())
+      where user_id=auth.uid() and content_type='display_name' and content_key='display_name' and status='open';
   end if;
+
   for m in select * from public.messages where sender_id=auth.uid() loop
     reason_text := public.validate_macro_text(m.body, 'message');
     if reason_text is not null then
@@ -722,6 +732,7 @@ begin
       on conflict (user_id,content_key) do update set reason=excluded.reason, status='open', resolved_at=null;
     end if;
   end loop;
+
   return query select f.id,f.content_type,f.content_id,f.reason,f.status
   from public.moderation_flags f
   where f.user_id=auth.uid() and f.status='open'
@@ -734,6 +745,7 @@ grant execute on function public.review_my_content() to authenticated;
 -- Enhanced non-AI moderation + immutable age declaration
 -- ================================================================
 alter table public.profiles add column if not exists date_of_birth date;
+alter table public.profiles add column if not exists name_change_required boolean not null default false;
 
 create or replace function public.prevent_dob_change()
 returns trigger
@@ -955,3 +967,16 @@ grant execute on function public.get_conversation_messages(uuid) to authenticate
 drop trigger if exists validate_profile_display_name on public.profiles;
 create trigger validate_profile_display_name before insert or update of display_name on public.profiles
 for each row execute function public.validate_profile_display_name();
+
+create or replace function public.clear_name_change_required()
+returns trigger language plpgsql as $$
+begin
+  if tg_op = 'UPDATE' and new.display_name is distinct from old.display_name then
+    new.name_change_required := false;
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists clear_name_change_required on public.profiles;
+create trigger clear_name_change_required before update of display_name on public.profiles
+for each row execute function public.clear_name_change_required();

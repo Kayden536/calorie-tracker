@@ -127,8 +127,9 @@ const PulsePlateApp = (() => {
         await showOnboarding(profile);
         return;
       }
+      const moderationRequiresNameChange = await reviewMyContent().catch(error => { console.warn('Content moderation review unavailable:', error); return false; });
+      if (moderationRequiresNameChange) return;
       await renderPage();
-      await reviewMyContent().catch(error => console.warn('Content moderation review unavailable:', error));
     } catch (error) {
       console.error(error);
       document.body.insertAdjacentHTML('afterbegin', `<div class="alpha-error">MacroSync could not initialize. ${escapeHtml(error.message)}</div>`);
@@ -456,17 +457,23 @@ const PulsePlateApp = (() => {
   }
 
   async function reviewMyContent() {
-    if (!supabase || !user) return;
+    if (!supabase || !user) return false;
     const { data, error } = await supabase.rpc('review_my_content');
-    if (error || !data?.length) return;
-    const openFlags = data.filter(f => f.status === 'open');
-    if (!openFlags.length) return;
+    if (error) { console.warn(error); return false; }
+    const openFlags = (data || []).filter(f => f.status === 'open');
+    const nameFlag = openFlags.find(f => f.content_type === 'display_name');
+
+    if (nameFlag) {
+      await showMandatoryDisplayNameChange(nameFlag.reason);
+      return true;
+    }
+
+    if (!openFlags.length) return false;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<section class="modal-card moderation-notice" role="dialog" aria-modal="true" aria-labelledby="moderationNoticeTitle"><p class="eyebrow">Action required</p><h2 id="moderationNoticeTitle">Some of your content needs attention</h2><p class="page-copy">MacroSync found content that may violate its rules about profanity, hateful or discriminatory language, sexual content, or personal information.</p><div class="moderation-items">${openFlags.map(f => `<div class="moderation-item" data-moderation-flag="${f.id}"><strong>${f.content_type === 'display_name' ? 'Display name' : 'Message'}</strong><p>${escapeHtml(f.reason)}</p><div class="modal-actions">${f.content_type === 'display_name' ? '<button type="button" class="primary-button" data-moderation-settings>Change display name</button>' : `<button type="button" class="ghost-button danger-button" data-delete-flagged-message="${f.content_id}">Delete message</button>`}</div></div>`).join('')}</div><div class="modal-actions"><button type="button" class="primary-button" data-close-moderation>Review later</button></div></section>`;
+    overlay.innerHTML = `<section class="modal-card moderation-notice" role="dialog" aria-modal="true" aria-labelledby="moderationNoticeTitle"><p class="eyebrow">Action required</p><h2 id="moderationNoticeTitle">Some of your messages need attention</h2><p class="page-copy">MacroSync found messages that may violate its rules. You can delete the flagged messages below.</p><div class="moderation-items">${openFlags.map(f => `<div class="moderation-item" data-moderation-flag="${f.id}"><strong>Message</strong><p>${escapeHtml(f.reason)}</p><div class="modal-actions"><button type="button" class="ghost-button danger-button" data-delete-flagged-message="${f.content_id}">Delete message</button></div></div>`).join('')}</div><div class="modal-actions"><button type="button" class="primary-button" data-close-moderation>Review later</button></div></section>`;
     document.body.appendChild(overlay);
     overlay.querySelector('[data-close-moderation]')?.addEventListener('click', () => overlay.remove());
-    overlay.querySelector('[data-moderation-settings]')?.addEventListener('click', async () => { overlay.remove(); window.location.href='settings.html'; });
     overlay.querySelectorAll('[data-delete-flagged-message]').forEach(btn => btn.addEventListener('click', async () => {
       if (!confirm('Delete this message permanently?')) return;
       const flag = btn.closest('[data-moderation-flag]');
@@ -477,6 +484,31 @@ const PulsePlateApp = (() => {
       flag.remove();
       if (!overlay.querySelector('[data-moderation-flag]')) overlay.remove();
     }));
+    return false;
+  }
+
+  async function showMandatoryDisplayNameChange(reason) {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<section class="modal-card moderation-notice" role="dialog" aria-modal="true" aria-labelledby="requiredNameTitle"><p class="eyebrow">Action required</p><h2 id="requiredNameTitle">Your display name must be changed</h2><p class="page-copy">Your current display name does not meet MacroSync's content rules. You must choose a new display name before you can continue using the app.</p><p class="settings-status">${escapeHtml(reason || 'Your display name contains language or content that is not allowed.')}</p><form class="settings-stack" data-required-name-form><div class="field"><label for="requiredDisplayName">New display name</label><input id="requiredDisplayName" maxlength="80" autocomplete="nickname" required autofocus /></div><button class="primary-button" type="submit">Change display name</button><p class="settings-status" data-required-name-status role="status"></p></form></section>`;
+    document.body.appendChild(overlay);
+    const form = overlay.querySelector('[data-required-name-form]');
+    const input = overlay.querySelector('#requiredDisplayName');
+    const status = overlay.querySelector('[data-required-name-status]');
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const displayName = input.value.trim();
+      const validation = validateDisplayName(displayName);
+      if (validation) { status.textContent = validation; return; }
+      status.textContent = 'Saving…';
+      const { error } = await supabase.from('profiles').update({ display_name: displayName }).eq('id', user.id);
+      if (error) { status.textContent = error.message; return; }
+      const { error: authError } = await supabase.auth.updateUser({ data: { display_name: displayName } });
+      if (authError) { status.textContent = authError.message; return; }
+      await supabase.from('moderation_flags').update({ status:'resolved', resolved_at:new Date().toISOString() }).eq('user_id', user.id).eq('content_type','display_name').eq('status','open');
+      overlay.remove();
+      window.location.reload();
+    });
   }
 
   async function getGoals() {
