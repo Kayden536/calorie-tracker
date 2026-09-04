@@ -1793,3 +1793,22 @@ body.light-theme .food-source-tab.active{background:var(--accent,#6d55e8);border
     padding-bottom: calc(4rem + env(safe-area-inset-bottom));
   }
 }
+
+/* Configurable meal setup */
+.meal-manager-list{display:grid;gap:.55rem;margin-bottom:.75rem}
+.meal-manager-row{display:flex;align-items:center;justify-content:space-between;gap:.75rem;padding:.75rem .85rem;border:1px solid var(--line);border-radius:.8rem;background:var(--surface-2)}
+.meal-manager-row>div{display:grid;gap:.15rem;min-width:0}
+.meal-manager-row strong{overflow-wrap:anywhere}
+.meal-manager-row small{color:var(--muted);font-size:.78rem}
+.meal-manager-add{width:100%}
+
+
+/* Food database management */
+.food-db-card { position: relative; }
+.food-card-main { flex: 1; min-width: 0; }
+.food-delete-button { border: 0; background: transparent; color: #b42318; font: inherit; cursor: pointer; padding: .35rem .55rem; border-radius: .45rem; }
+.food-delete-button:hover { text-decoration: underline; }
+.delete-food-actions { flex-wrap: wrap; }
+.food-author { margin: .2rem 0; font-size: .82rem; opacity: .75; }
+.community-food-card, .personal-food-card { display: flex; align-items: center; gap: .75rem; text-align: left; cursor: pointer; }
+.community-food-card .food-card-main, .personal-food-card .food-card-main { cursor: pointer; }

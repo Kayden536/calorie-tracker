@@ -35,7 +35,7 @@
             <div class="panel-header"><div><p class="eyebrow">Existing foods</p><h2>Add food</h2></div></div>
             <div class="field"><label for="foodSearch">Search foods</label><input id="foodSearch" data-food-search placeholder="Search chicken, oats, yogurt..." autocomplete="off" /></div>
             <div class="food-source-tabs" role="tablist" aria-label="Food source"><button class="food-source-tab active" type="button" data-food-source="usda">USDA Foods</button><button class="food-source-tab" type="button" data-food-source="community">Community Foods</button></div>
-            <p class="page-copy" data-food-source-hint>USDA FoodData Central results with nutrition verification.</p>
+            <p class="page-copy" data-food-source-hint>USDA FoodData Central results with nutrition verification.</p><p class="manual-note">In Community Foods, search a food by name or type <strong>@displayname</strong> to find foods published by a specific user or personal trainer.</p>
             <div class="food-database-list" data-food-database-list><p class="page-copy">Search for a food to get started.</p></div>
             <div class="panel-divider"></div>
             <div class="panel-header compact"><div><p class="eyebrow">Community database</p><h2>Add a food</h2></div><button class="ghost-button" type="button" data-community-toggle>+ Add Community Food</button></div>
@@ -50,6 +50,10 @@
             <div class="panel-header"><div><p class="eyebrow">Quick logging</p><h2>Saved Meals</h2></div><a class="ghost-button" href="recipes.html">Recipes</a></div>
             <div data-saved-meal-list><p class="page-copy">No saved meals yet.</p></div>
             <p class="page-copy">Saved meals are private to your account and are designed for foods you log together often.</p>
+            <div class="panel-divider"></div>
+            <div class="panel-header compact"><div><p class="eyebrow">Your meals</p><h2>Meal setup</h2></div></div>
+            <p class="page-copy">You start with Meal 1, Meal 2, and Meal 3. Rename them any time and add up to 10 meals total.</p>
+            <div data-meal-manager></div>
             <div class="panel-divider"></div>
             <div class="panel-header compact"><div><p class="eyebrow">Selected date</p><h2>Meal preview</h2></div></div>
             <div data-meal-list></div>
