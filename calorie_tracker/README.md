@@ -100,3 +100,7 @@ This build combines the food/recipe/database features with the MacroSync setting
 - message notifications using the `notifications` table and `send_message` RPC
 
 Run the complete `supabase-schema.sql` in Supabase after deploying this update.
+
+## Terms, privacy, and age-based access
+
+See `POLICY-SETUP.md`. Existing Supabase databases should run `supabase-terms-privacy-minor-migration.sql`. New installations can use the updated `supabase-schema.sql`.

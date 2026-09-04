@@ -26,13 +26,21 @@
       <p class="page-copy">Create an account to save your food diary and goals across devices.</p>
       <div class="auth-tabs"><button id="loginTab" class="active" type="button">Log in</button><button id="signupTab" type="button">Create account</button></div>
       <form id="authForm">
-        <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
+        <div class="field"><label for="email" id="emailLabel">Email</label><input id="email" type="email" autocomplete="email" required><small class="page-copy" id="emailHelp" hidden>For users ages 13–15, use a parent or legal guardian's email address. The child's own email address is not required.</small></div>
         <div class="field" id="passwordField"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" minlength="8"></div>
         <div class="field" id="confirmPasswordField" hidden><label for="confirmPassword">New password</label><input id="confirmPassword" type="password" autocomplete="new-password" minlength="8"></div>
-        <div class="field" id="nameField" hidden><label for="displayName">Display name</label><input id="displayName" autocomplete="name"></div><div class="field" id="dobField" hidden><label>Date of birth</label><div class="date-picker" data-date-picker="signup"><select id="dateOfBirthYear" aria-label="Birth year" required></select><select id="dateOfBirthMonth" aria-label="Birth month" required></select><select id="dateOfBirthDay" aria-label="Birth day" required></select></div><input id="dateOfBirth" type="hidden"><small class="page-copy">Choose the year directly, then select the month and day. Used only for age-appropriate content rules. It cannot be changed after account creation.</small></div>
+        <div class="field" id="nameField" hidden><label for="displayName">Display name <span id="nameOptionalNote" class="page-copy">(optional)</span></label><input id="displayName" autocomplete="nickname"><small class="page-copy" id="nameHelp">Your display name is shown to other users when social features are available.</small></div><div class="field" id="dobField" hidden><label>Date of birth</label><div class="date-picker" data-date-picker="signup"><select id="dateOfBirthYear" aria-label="Birth year" required></select><select id="dateOfBirthMonth" aria-label="Birth month" required></select><select id="dateOfBirthDay" aria-label="Birth day" required></select></div><input id="dateOfBirth" type="hidden"><small class="page-copy">Choose the year directly, then select the month and day. Used only for age-appropriate content rules. It cannot be changed after account creation.</small></div>
         <button class="primary-button" id="authSubmit" type="submit">Log in</button>
         <button class="auth-link-button" id="forgotPassword" type="button">Forgot password?</button>
         <button class="auth-link-button" id="backToLogin" type="button" hidden>Back to log in</button>
+        <section class="signup-agreements" id="signupAgreements" hidden aria-labelledby="agreementTitle">
+          <h2 id="agreementTitle">Required agreements</h2>
+          <p class="page-copy">You must agree to these documents before creating a MacroSync account.</p>
+          <label class="agreement-row"><input id="termsAgreement" type="checkbox"><span>I agree to the <a href="terms.html" target="_blank" rel="noopener">MacroSync Terms of Service</a>.</span></label>
+          <label class="agreement-row"><input id="privacyAgreement" type="checkbox"><span>I have read and agree to the <a href="privacy.html" target="_blank" rel="noopener">MacroSync Privacy Policy</a>.</span></label>
+          <label class="agreement-row" id="parentAgreementRow" hidden><input id="parentAgreement" type="checkbox"><span>I confirm that the parent or legal guardian whose email address I provided must approve this account by completing the email confirmation/consent process.</span></label>
+          <p class="agreement-note">MacroSync does not sell your personal information. Some information may be processed or technically stored by service providers such as Supabase when necessary to operate MacroSync. Those providers are used on MacroSync's behalf and are not given permission to use your information for unrelated purposes.</p>
+        </section>
         <p class="auth-status" id="authStatus" role="status"></p>
       </form>
       <div class="alpha-note"><strong>MacroSync Alpha</strong><br>This is an early public test version. Nutrition data comes from USDA FoodData Central. Features may change as the app develops.</div>

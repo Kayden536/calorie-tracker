@@ -18,6 +18,16 @@
   const dobYear = document.querySelector('#dateOfBirthYear');
   const dobMonth = document.querySelector('#dateOfBirthMonth');
   const dobDay = document.querySelector('#dateOfBirthDay');
+  const emailLabel = document.querySelector('#emailLabel');
+  const emailHelp = document.querySelector('#emailHelp');
+  const nameOptionalNote = document.querySelector('#nameOptionalNote');
+  const nameHelp = document.querySelector('#nameHelp');
+  const signupAgreements = document.querySelector('#signupAgreements');
+  const termsAgreement = document.querySelector('#termsAgreement');
+  const privacyAgreement = document.querySelector('#privacyAgreement');
+  const parentAgreementRow = document.querySelector('#parentAgreementRow');
+  const parentAgreement = document.querySelector('#parentAgreement');
+  const dobAgeNotice = document.querySelector('#dobAgeNotice');
 
   let supabase;
   let mode = 'login';
@@ -51,10 +61,58 @@
       if (dobYear.value && dobMonth.value && dobDay.value) dateOfBirth.value = `${dobYear.value}-${dobMonth.value}-${dobDay.value}`;
       else dateOfBirth.value = '';
     }
-    dobYear.addEventListener('change', () => { refreshDays(); syncDate(); });
-    dobMonth.addEventListener('change', () => { refreshDays(); syncDate(); });
-    dobDay.addEventListener('change', syncDate);
+    dobYear.addEventListener('change', () => { refreshDays(); syncDate(); updateSignupRequirements(); });
+    dobMonth.addEventListener('change', () => { refreshDays(); syncDate(); updateSignupRequirements(); });
+    dobDay.addEventListener('change', () => { syncDate(); updateSignupRequirements(); });
     refreshDays();
+  }
+
+  function calculateAge(dob) {
+    if (!dob) return null;
+    const birth = new Date(`${dob}T00:00:00`);
+    if (Number.isNaN(birth.getTime())) return null;
+    const today = new Date();
+    let age = today.getFullYear() - birth.getFullYear();
+    if (today.getMonth() < birth.getMonth() || (today.getMonth() === birth.getMonth() && today.getDate() < birth.getDate())) age--;
+    return age;
+  }
+
+  function updateSignupRequirements() {
+    if (!signupAgreements) return;
+    const signup = mode === 'signup';
+    signupAgreements.hidden = !signup;
+    if (!signup) {
+      if (termsAgreement) termsAgreement.required = false;
+      if (privacyAgreement) privacyAgreement.required = false;
+      if (parentAgreement) parentAgreement.required = false;
+      return;
+    }
+    const age = calculateAge(dateOfBirth?.value || '');
+    const minor = Number.isFinite(age) && age >= 13 && age < 16;
+    if (emailLabel) emailLabel.textContent = minor ? 'Parent or legal guardian email' : 'Email';
+    if (emailHelp) emailHelp.hidden = !minor;
+    if (nameField) nameField.hidden = minor;
+    if (displayName) displayName.required = !minor;
+    if (nameOptionalNote) nameOptionalNote.textContent = minor ? '(not required)' : '(required)';
+    if (nameHelp) nameHelp.textContent = minor ? 'A display name is optional for limited accounts and is not required to use food logging or the food database.' : 'Your display name is shown to other users when social features are available.';
+    if (parentAgreementRow) parentAgreementRow.hidden = !minor;
+    if (parentAgreement) parentAgreement.required = minor;
+    if (termsAgreement) termsAgreement.required = true;
+    if (privacyAgreement) privacyAgreement.required = true;
+    if (minor) {
+      email.autocomplete = 'email';
+    }
+    updateSubmitState();
+  }
+
+  function updateSubmitState() {
+    if (!submit) return;
+    if (mode !== 'signup') { submit.disabled = false; return; }
+    const age = calculateAge(dateOfBirth?.value || '');
+    const minor = Number.isFinite(age) && age >= 13 && age < 16;
+    const agreementsOk = !!termsAgreement?.checked && !!privacyAgreement?.checked && (!minor || !!parentAgreement?.checked);
+    const dobOk = !!dateOfBirth?.value;
+    submit.disabled = !(agreementsOk && dobOk);
   }
 
   function isRecoveryLink() {
@@ -113,6 +171,7 @@
       backToLogin.hidden = true;
     }
     status.textContent = '';
+    updateSignupRequirements();
   }
 
   function setForgotMode() {
@@ -160,6 +219,8 @@
   });
 
   if (recovery) setRecoveryMode();
+  [termsAgreement, privacyAgreement, parentAgreement].forEach(el => el?.addEventListener('change', updateSubmitState));
+  updateSignupRequirements();
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -193,15 +254,26 @@
       const pass = password.value;
       const name = displayName.value.trim() || 'MacroSync User';
       const dob = dateOfBirth?.value || '';
+      let signupAge = null;
+      let limitedMinor = false;
       if (mode === 'signup') {
         const blocked = ['fuck','fucker','fucking','motherfucker','shit','shitty','bullshit','bitch','bitches','asshole','dumbass','bastard','cunt','dick','dickhead','pussy','cock','slut','whore','damn','crap','piss','jackass','asshat','prick','twat','wanker','porn','pornography','nude','nudes','naked','sex','sexual','sexy','onlyfans','sexting','rape','rapist','pedo','pedophile','groomer','nigger','niggers','nigga','niggas','chink','chinks','spic','spics','kike','kikes','gook','gooks','wetback','wetbacks','beaner','beaners','raghead','ragheads','coon','coons','fag','fags','faggot','faggots','dyke','dykes','tranny','trannies','bbc'];
         const leet = {'@':'a','4':'a','3':'e','1':'i','!':'i','0':'o','$':'s','5':'s','7':'t','+':'t','8':'b'};
         const normalize = value => value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[0134578@$!+]/g,c=>leet[c]||c).replace(/[^a-z0-9]/g,'');
         const normalizedName = normalize(name);
         const tokenName = name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-        if (!name) throw new Error('Please enter a display name.');
         if (!dob) throw new Error('Please enter your date of birth.');
-        const birth=new Date(`${dob}T00:00:00`), today=new Date(); let age=today.getFullYear()-birth.getFullYear(); if(today.getMonth()<birth.getMonth() || (today.getMonth()===birth.getMonth() && today.getDate()<birth.getDate())) age--; if(age<13) throw new Error('MacroSync accounts are not available for users under 13.'); if(age>120) throw new Error('Please enter a valid date of birth.');
+        const birth=new Date(`${dob}T00:00:00`), today=new Date();
+        let age=today.getFullYear()-birth.getFullYear();
+        if(today.getMonth()<birth.getMonth() || (today.getMonth()===birth.getMonth() && today.getDate()<birth.getDate())) age--;
+        if(age<13) throw new Error('MacroSync accounts are not available for users under 13.');
+        if(age>120) throw new Error('Please enter a valid date of birth.');
+        signupAge = age;
+        limitedMinor = age < 16;
+        if (!limitedMinor && !name.trim()) throw new Error('Please enter a display name.');
+        if (!termsAgreement?.checked || !privacyAgreement?.checked) throw new Error('You must agree to the Terms of Service and Privacy Policy before creating an account.');
+        if (limitedMinor && !parentAgreement?.checked) throw new Error('A parent or legal guardian agreement is required for users ages 13–15.');
+        if (limitedMinor && !address) throw new Error('Enter a parent or legal guardian email address.');
         if (name.length > 80) throw new Error('Display names must be 80 characters or fewer.');
         if (blocked.some(term => tokenName.split(/\s+/).includes(term) || normalizedName === term || normalizedName.includes(term))) {
           throw new Error('That display name contains language or content that is not allowed.');
@@ -213,11 +285,22 @@
         result = await supabase.auth.signUp({
           email: address,
           password: pass,
-          options: { data: { display_name: name, date_of_birth: dob } }
+          options: { data: { display_name: limitedMinor ? 'MacroSync User' : name, date_of_birth: dob, terms_version: '1.0', privacy_version: '1.0', terms_accepted_at: new Date().toISOString(), privacy_accepted_at: new Date().toISOString(), parental_consent_required: limitedMinor, parental_consent_status: limitedMinor ? 'pending' : 'not_required', parent_guardian_email: limitedMinor ? address : null } }
         });
         if (!result.error && !result.data.session) {
-          status.textContent = 'Account created. Check your email to confirm your account, then log in.';
+          status.textContent = limitedMinor ? 'Signup started. The parent or legal guardian must complete the email confirmation/consent process before this account can use anything beyond the limited food features.' : 'Account created. Check your email to confirm your account, then log in.';
         } else if (!result.error) {
+          const profilePayload = {
+            date_of_birth: dob,
+            terms_version: '1.0',
+            privacy_version: '1.0',
+            terms_accepted_at: new Date().toISOString(),
+            privacy_accepted_at: new Date().toISOString(),
+            parental_consent_required: limitedMinor,
+            parental_consent_status: limitedMinor ? 'pending' : 'not_required',
+            parent_guardian_email: limitedMinor ? address : null
+          };
+          await supabase.from('profiles').update(profilePayload).eq('id', result.data.user.id);
           window.location.href = 'index.html';
         }
       } else {

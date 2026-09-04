@@ -46,6 +46,16 @@ alter table public.profiles add column if not exists business_name text;
 alter table public.profiles add column if not exists primary_goal text not null default 'health';
 alter table public.profiles add column if not exists onboarding_complete boolean not null default false;
 alter table public.profiles add column if not exists message_notifications_enabled boolean not null default true;
+alter table public.profiles add column if not exists date_of_birth date;
+alter table public.profiles add column if not exists name_change_required boolean not null default false;
+alter table public.profiles add column if not exists terms_version text;
+alter table public.profiles add column if not exists privacy_version text;
+alter table public.profiles add column if not exists terms_accepted_at timestamptz;
+alter table public.profiles add column if not exists privacy_accepted_at timestamptz;
+alter table public.profiles add column if not exists parental_consent_required boolean not null default false;
+alter table public.profiles add column if not exists parental_consent_status text not null default 'not_required' check (parental_consent_status in ('not_required','pending','approved','denied'));
+alter table public.profiles add column if not exists parent_guardian_email text;
+alter table public.profiles add column if not exists parental_consent_approved_at timestamptz;
 
 create index if not exists food_entries_user_date_idx on public.food_entries(user_id, logged_date, created_at);
 
@@ -272,7 +282,15 @@ alter table public.messages enable row level security;
 -- Signed-in users may discover profiles. Email is intentionally included because PulsePlate's friend search
 -- uses email as a secondary identifier. This can be tightened later with a privacy setting.
 drop policy if exists "authenticated profiles discovery" on public.profiles;
-create policy "authenticated profiles discovery" on public.profiles for select to authenticated using (true);
+create policy "authenticated profiles discovery" on public.profiles for select to authenticated using (
+  auth.uid() = id
+  or exists (
+    select 1 from public.friend_connections c
+    where c.status='accepted'
+      and ((c.requester_id=auth.uid() and c.addressee_id=profiles.id)
+        or (c.requester_id=profiles.id and c.addressee_id=auth.uid()))
+  )
+);
 
 drop policy if exists "friends participants read" on public.friend_connections;
 drop policy if exists "friends requester insert" on public.friend_connections;
@@ -321,7 +339,7 @@ create policy "food entries own rows" on public.food_entries for select to authe
 drop policy if exists "meals own rows" on public.meals;
 create policy "meals own rows" on public.meals for select to authenticated using (
   auth.uid() = user_id
-  or exists (
+  or (not public.is_limited_minor() and exists (
     select 1
     from public.friend_connections c
     join public.profiles viewer on viewer.id = auth.uid()
@@ -336,7 +354,7 @@ create policy "meals own rows" on public.meals for select to authenticated using
           else c.addressee_share_meals
         end = true
       )
-  )
+  ))
 );
 
 -- Meal sharing is controlled independently by each person on a connection.
@@ -361,6 +379,7 @@ declare
   other_role text;
   other_user_id uuid;
 begin
+  if public.is_limited_minor() then raise exception 'Meal sharing is not available to limited accounts for users ages 13–15.'; end if;
   select *
     into connection_row
     from public.friend_connections
@@ -1329,6 +1348,7 @@ declare
   blocked text;
 begin
   if auth.uid() is null then raise exception 'You must be signed in.'; end if;
+  if public.is_limited_minor() then raise exception 'Messaging is not available to limited accounts for users ages 13–15.'; end if;
   select date_of_birth into viewer_dob from public.profiles where profiles.id=auth.uid();
   viewer_minor := viewer_dob is null or age(current_date,viewer_dob) < interval '18 years';
   for m in
@@ -1487,6 +1507,7 @@ returns public.messages language plpgsql security definer set search_path=public
 declare new_message public.messages; validation_message text; my_status text; recipient_status text;
 begin
  if auth.uid() is null then raise exception 'You must be signed in to send messages.'; end if;
+ if public.is_limited_minor() then raise exception 'Messaging is not available to limited accounts for users ages 13–15.'; end if;
  select account_status into my_status from public.profiles where id=auth.uid();
  if coalesce(my_status,'active')='banned' then raise exception 'Your account is banned.'; end if;
  if coalesce(my_status,'active')='suspended' and exists(select 1 from public.profiles where id=auth.uid() and moderation_status_until is null) then raise exception 'Your account is suspended.'; end if;
@@ -1587,3 +1608,221 @@ begin
 end;
 $$;
 grant execute on function public.create_food_records(text,numeric,numeric,numeric,numeric,numeric,text,numeric,boolean,boolean,numeric,numeric,numeric,numeric,text) to authenticated;
+
+
+-- ================================================================
+-- Terms, privacy acceptance, and limited accounts for ages 13-15
+-- ================================================================
+create or replace function public.user_age_years(p_user_id uuid default auth.uid())
+returns integer
+language sql stable security definer set search_path=public
+as $$
+  select case when p.date_of_birth is null then null else
+    extract(year from age(current_date, p.date_of_birth))::integer end
+  from public.profiles p
+  where p.id = p_user_id;
+$$;
+grant execute on function public.user_age_years(uuid) to authenticated;
+
+create or replace function public.is_limited_minor(p_user_id uuid default auth.uid())
+returns boolean
+language sql stable security definer set search_path=public
+as $$
+  select coalesce(public.user_age_years(p_user_id) between 13 and 15, false)
+    and exists (
+      select 1 from public.profiles p
+      where p.id=p_user_id and p.parental_consent_status <> 'approved'
+    );
+$$;
+grant execute on function public.is_limited_minor(uuid) to authenticated;
+
+-- Parent/guardian approval is completed by confirming the parent/guardian email
+-- address used for a 13-15 account. The RPC, rather than a client-side update,
+-- is the only route that can move consent from pending to approved.
+create or replace function public.approve_parental_consent()
+returns boolean
+language plpgsql security definer set search_path=public,auth
+as $$
+declare
+  profile_row public.profiles;
+  confirmed_at timestamptz;
+begin
+  if auth.uid() is null then raise exception 'You must be signed in.'; end if;
+  select * into profile_row from public.profiles where id=auth.uid();
+  if profile_row.id is null then raise exception 'Profile not found.'; end if;
+  if public.user_age_years(auth.uid()) not between 13 and 15 then return true; end if;
+  select email_confirmed_at into confirmed_at from auth.users where id=auth.uid();
+  if confirmed_at is null then raise exception 'The parent or legal guardian must complete the email confirmation before this account can be approved.'; end if;
+  if nullif(lower(trim(profile_row.parent_guardian_email)), '') is null then raise exception 'Parent or legal guardian email is missing.'; end if;
+  if lower(trim(profile_row.parent_guardian_email)) <> lower(trim(coalesce((select email from auth.users where id=auth.uid()),''))) then raise exception 'The approved email does not match the parent or legal guardian email on the account.'; end if;
+  perform set_config('macrosync.parent_consent_approval','true',true);
+  update public.profiles
+    set parental_consent_status='approved', parental_consent_approved_at=now()
+  where id=auth.uid() and parental_consent_status <> 'approved';
+  return true;
+end;
+$$;
+grant execute on function public.approve_parental_consent() to authenticated;
+
+-- Protect the consent status from ordinary client updates. The approval RPC sets
+-- a transaction-local flag that this trigger recognizes.
+create or replace function public.protect_parental_consent()
+returns trigger language plpgsql as $$
+begin
+  if tg_op='UPDATE' and new.parental_consent_status is distinct from old.parental_consent_status
+     and coalesce(current_setting('macrosync.parent_consent_approval', true),'') <> 'true' then
+    raise exception 'Parental consent status can only be changed through the consent process.';
+  end if;
+  if tg_op='UPDATE' and old.parent_guardian_email is not null and new.parent_guardian_email is distinct from old.parent_guardian_email then
+    raise exception 'Parent or legal guardian email cannot be changed after signup.';
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists protect_parental_consent on public.profiles;
+create trigger protect_parental_consent before update of parental_consent_status,parent_guardian_email on public.profiles
+for each row execute function public.protect_parental_consent();
+
+-- A limited account can only use food logging and the food database. The database
+-- remains the enforcement boundary; hiding navigation in the browser is not enough.
+drop policy if exists "goals own row" on public.nutrition_goals;
+drop policy if exists "goals insert own row" on public.nutrition_goals;
+drop policy if exists "goals update own row" on public.nutrition_goals;
+create policy "goals own row" on public.nutrition_goals for select using (auth.uid() = user_id and not public.is_limited_minor());
+create policy "goals insert own row" on public.nutrition_goals for insert with check (auth.uid() = user_id and not public.is_limited_minor());
+create policy "goals update own row" on public.nutrition_goals for update using (auth.uid() = user_id and not public.is_limited_minor()) with check (auth.uid() = user_id and not public.is_limited_minor());
+
+-- Meals are required for food logging, so limited accounts may use their own meals.
+drop policy if exists "meals own rows" on public.meals;
+drop policy if exists "meals insert own rows" on public.meals;
+drop policy if exists "meals update own rows" on public.meals;
+create policy "meals own rows" on public.meals for select to authenticated using (
+  auth.uid() = user_id
+  or (not public.is_limited_minor() and exists (
+    select 1 from public.friend_connections c
+    join public.profiles viewer on viewer.id=auth.uid()
+    join public.profiles owner on owner.id=public.meals.user_id
+    where c.status='accepted'
+      and ((c.requester_id=auth.uid() and c.addressee_id=public.meals.user_id) or (c.requester_id=public.meals.user_id and c.addressee_id=auth.uid()))
+      and ((viewer.role='trainer' and owner.role='user') or case when c.requester_id=public.meals.user_id then c.requester_share_meals else c.addressee_share_meals end=true)
+  ))
+);
+create policy "meals insert own rows" on public.meals for insert to authenticated with check (auth.uid() = user_id);
+create policy "meals update own rows" on public.meals for update to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- Disable social connections for limited accounts at the RLS boundary.
+drop policy if exists "friends participants read" on public.friend_connections;
+drop policy if exists "friends requester insert" on public.friend_connections;
+drop policy if exists "friends participants update" on public.friend_connections;
+create policy "friends participants read" on public.friend_connections for select to authenticated using ((auth.uid() = requester_id or auth.uid() = addressee_id) and not public.is_limited_minor());
+create policy "friends requester insert" on public.friend_connections for insert to authenticated with check (auth.uid() = requester_id and not public.is_limited_minor() and not public.is_limited_minor(addressee_id));
+create policy "friends participants update" on public.friend_connections for update to authenticated using ((auth.uid() = requester_id or auth.uid() = addressee_id) and not public.is_limited_minor()) with check ((auth.uid() = requester_id or auth.uid() = addressee_id) and not public.is_limited_minor() and not public.is_limited_minor(requester_id) and not public.is_limited_minor(addressee_id));
+
+-- Messaging is disabled for limited accounts and their direct reads.
+drop policy if exists "messages participants read" on public.messages;
+drop policy if exists "messages sender insert" on public.messages;
+drop policy if exists "messages participants update" on public.messages;
+drop policy if exists "messages sender delete" on public.messages;
+create policy "messages participants read" on public.messages for select to authenticated using (not public.is_limited_minor() and (auth.uid() = sender_id or auth.uid() = recipient_id));
+create policy "messages sender insert" on public.messages for insert to authenticated with check (not public.is_limited_minor() and auth.uid() = sender_id and not public.is_limited_minor(recipient_id) and exists (select 1 from public.friend_connections c where c.status = 'accepted' and ((c.requester_id = sender_id and c.addressee_id = recipient_id) or (c.requester_id = recipient_id and c.addressee_id = sender_id))));
+create policy "messages participants update" on public.messages for update to authenticated using (not public.is_limited_minor() and (auth.uid() = sender_id or auth.uid() = recipient_id)) with check (not public.is_limited_minor() and (auth.uid() = sender_id or auth.uid() = recipient_id));
+create policy "messages sender delete" on public.messages for delete to authenticated using (not public.is_limited_minor() and auth.uid() = sender_id);
+
+-- Progress tracking is unavailable to limited accounts.
+drop policy if exists "weight logs own rows" on public.weight_logs;
+drop policy if exists "weight logs insert own rows" on public.weight_logs;
+drop policy if exists "weight logs update own rows" on public.weight_logs;
+drop policy if exists "weight logs delete own rows" on public.weight_logs;
+create policy "weight logs own rows" on public.weight_logs for select to authenticated using (auth.uid() = user_id and not public.is_limited_minor());
+create policy "weight logs insert own rows" on public.weight_logs for insert to authenticated with check (auth.uid() = user_id and not public.is_limited_minor());
+create policy "weight logs update own rows" on public.weight_logs for update to authenticated using (auth.uid() = user_id and not public.is_limited_minor()) with check (auth.uid() = user_id and not public.is_limited_minor());
+create policy "weight logs delete own rows" on public.weight_logs for delete to authenticated using (auth.uid() = user_id and not public.is_limited_minor());
+
+drop policy if exists "body measurements own rows" on public.body_measurements;
+drop policy if exists "body measurements insert own rows" on public.body_measurements;
+drop policy if exists "body measurements update own rows" on public.body_measurements;
+drop policy if exists "body measurements delete own rows" on public.body_measurements;
+create policy "body measurements own rows" on public.body_measurements for select to authenticated using (auth.uid() = user_id and not public.is_limited_minor());
+create policy "body measurements insert own rows" on public.body_measurements for insert to authenticated with check (auth.uid() = user_id and not public.is_limited_minor());
+create policy "body measurements update own rows" on public.body_measurements for update to authenticated using (auth.uid() = user_id and not public.is_limited_minor()) with check (auth.uid() = user_id and not public.is_limited_minor());
+create policy "body measurements delete own rows" on public.body_measurements for delete to authenticated using (auth.uid() = user_id and not public.is_limited_minor());
+
+-- Recipes and saved meals are unavailable to limited accounts.
+drop policy if exists "recipes own rows" on public.recipes;
+drop policy if exists "recipes insert own rows" on public.recipes;
+drop policy if exists "recipes update own rows" on public.recipes;
+drop policy if exists "recipes delete own rows" on public.recipes;
+create policy "recipes own rows" on public.recipes for select to authenticated using (auth.uid() = user_id and not public.is_limited_minor());
+create policy "recipes insert own rows" on public.recipes for insert to authenticated with check (auth.uid() = user_id and not public.is_limited_minor());
+create policy "recipes update own rows" on public.recipes for update to authenticated using (auth.uid() = user_id and not public.is_limited_minor()) with check (auth.uid() = user_id and not public.is_limited_minor());
+create policy "recipes delete own rows" on public.recipes for delete to authenticated using (auth.uid() = user_id and not public.is_limited_minor());
+
+drop policy if exists "recipe items own rows" on public.recipe_items;
+drop policy if exists "recipe items insert own rows" on public.recipe_items;
+drop policy if exists "recipe items update own rows" on public.recipe_items;
+drop policy if exists "recipe items delete own rows" on public.recipe_items;
+create policy "recipe items own rows" on public.recipe_items for select to authenticated using (auth.uid() = user_id and not public.is_limited_minor());
+create policy "recipe items insert own rows" on public.recipe_items for insert to authenticated with check (auth.uid() = user_id and not public.is_limited_minor() and exists (select 1 from public.recipes r where r.id=recipe_items.recipe_id and r.user_id=auth.uid()));
+create policy "recipe items update own rows" on public.recipe_items for update to authenticated using (auth.uid() = user_id and not public.is_limited_minor()) with check (auth.uid() = user_id and not public.is_limited_minor());
+create policy "recipe items delete own rows" on public.recipe_items for delete to authenticated using (auth.uid() = user_id and not public.is_limited_minor());
+
+drop policy if exists "saved meals own rows" on public.saved_meals;
+drop policy if exists "saved meals insert own rows" on public.saved_meals;
+drop policy if exists "saved meals update own rows" on public.saved_meals;
+drop policy if exists "saved meals delete own rows" on public.saved_meals;
+create policy "saved meals own rows" on public.saved_meals for select to authenticated using (auth.uid() = user_id and not public.is_limited_minor());
+create policy "saved meals insert own rows" on public.saved_meals for insert to authenticated with check (auth.uid() = user_id and not public.is_limited_minor());
+create policy "saved meals update own rows" on public.saved_meals for update to authenticated using (auth.uid() = user_id and not public.is_limited_minor()) with check (auth.uid() = user_id and not public.is_limited_minor());
+create policy "saved meals delete own rows" on public.saved_meals for delete to authenticated using (auth.uid() = user_id and not public.is_limited_minor());
+
+drop policy if exists "saved meal items own rows" on public.saved_meal_items;
+drop policy if exists "saved meal items insert own rows" on public.saved_meal_items;
+drop policy if exists "saved meal items update own rows" on public.saved_meal_items;
+drop policy if exists "saved meal items delete own rows" on public.saved_meal_items;
+create policy "saved meal items own rows" on public.saved_meal_items for select to authenticated using (auth.uid() = user_id and not public.is_limited_minor());
+create policy "saved meal items insert own rows" on public.saved_meal_items for insert to authenticated with check (auth.uid() = user_id and not public.is_limited_minor() and exists (select 1 from public.saved_meals m where m.id=saved_meal_items.saved_meal_id and m.user_id=auth.uid()));
+create policy "saved meal items update own rows" on public.saved_meal_items for update to authenticated using (auth.uid() = user_id and not public.is_limited_minor()) with check (auth.uid() = user_id and not public.is_limited_minor());
+create policy "saved meal items delete own rows" on public.saved_meal_items for delete to authenticated using (auth.uid() = user_id and not public.is_limited_minor());
+
+-- Notifications and feedback are not available to limited accounts.
+drop policy if exists "notifications recipient read" on public.notifications;
+drop policy if exists "notifications recipient update" on public.notifications;
+create policy "notifications recipient read" on public.notifications for select to authenticated using (auth.uid() = recipient_id and not public.is_limited_minor());
+create policy "notifications recipient update" on public.notifications for update to authenticated using (auth.uid() = recipient_id and not public.is_limited_minor()) with check (auth.uid() = recipient_id and not public.is_limited_minor());
+
+drop policy if exists "feedback insert own rows" on public.feedback;
+drop policy if exists "feedback own rows read" on public.feedback;
+create policy "feedback insert own rows" on public.feedback for insert to authenticated with check (auth.uid() = user_id and not public.is_limited_minor());
+create policy "feedback own rows read" on public.feedback for select to authenticated using (auth.uid() = user_id and not public.is_limited_minor());
+
+-- Do not expose a limited account's parent/guardian email through profile discovery.
+create or replace function public.search_people(p_query text)
+returns table(id uuid,display_name text,email text,role text,business_name text)
+language sql stable security definer set search_path=public as $$
+  select p.id,p.display_name,
+         case when p.email_search_enabled and not p.parental_consent_required then p.email else null end,
+         p.role,p.business_name
+  from public.profiles p
+  where p.id <> auth.uid()
+    and not public.is_limited_minor()
+    and (trim(coalesce(p_query,''))='' or p.display_name ilike '%'||trim(p_query)||'%' or (p.email_search_enabled and not p.parental_consent_required and p.email ilike '%'||trim(p_query)||'%'))
+  order by p.display_name
+  limit 50;
+$$;
+grant execute on function public.search_people(text) to authenticated;
+
+-- Meal sharing policies must also reject limited accounts.
+drop policy if exists "food entries own rows" on public.food_entries;
+create policy "food entries own rows" on public.food_entries for select to authenticated using (
+  auth.uid() = user_id
+  or (not public.is_limited_minor() and exists (
+    select 1 from public.friend_connections c
+    join public.profiles viewer on viewer.id = auth.uid()
+    join public.profiles owner on owner.id = food_entries.user_id
+    where c.status = 'accepted'
+      and ((c.requester_id = auth.uid() and c.addressee_id = food_entries.user_id)
+        or (c.requester_id = food_entries.user_id and c.addressee_id = auth.uid()))
+      and ((viewer.role = 'trainer' and owner.role = 'user') or case when c.requester_id = food_entries.user_id then c.requester_share_meals else c.addressee_share_meals end = true)
+  ))
+);
+

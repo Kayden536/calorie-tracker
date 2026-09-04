@@ -145,11 +145,19 @@ const PulsePlateApp = (() => {
       if (error || !data.session) { window.location.href = 'auth.html'; return; }
       user = data.session.user;
       weekStart = startOfWeek(selectedDate);
-      const profile = await ensureProfile();
+      let profile = await ensureProfile();
+      if (profile?.parental_consent_required && profile?.parental_consent_status === 'pending') {
+        const { data: consentApproved, error: consentError } = await supabase.rpc('approve_parental_consent');
+        if (!consentError && consentApproved) {
+          const refreshed = await supabase.from('profiles').select('*').eq('id', user.id).single();
+          if (!refreshed.error) profile = refreshed.data;
+        }
+      }
       await loadUserMeals();
       if (profile?.date_of_birth === null || profile?.date_of_birth === undefined) await requireAgeDeclaration();
       wireGlobalAuth(profile);
-      if (!profile?.onboarding_complete) {
+      if (await enforceLimitedMinorAccess(profile)) return;
+      if (!profile?.onboarding_complete && !isLimitedMinorProfile(profile)) {
         await showOnboarding(profile);
         return;
       }
@@ -169,6 +177,23 @@ const PulsePlateApp = (() => {
     if(beforeBirthday) age--;
     return age;
   }
+  function isLimitedMinorProfile(profile) {
+    const age = profile?.date_of_birth ? ageInYears(profile.date_of_birth) : null;
+    return Number.isFinite(age) && age >= 13 && age < 16 && profile?.parental_consent_status !== 'approved';
+  }
+
+  async function enforceLimitedMinorAccess(profile) {
+    const limited = isLimitedMinorProfile(profile);
+    if (!limited) return false;
+    const page = document.body.dataset.page || location.pathname.split('/').pop().replace('.html','');
+    const allowed = new Set(['log', 'food-management']);
+    if (!allowed.has(page)) {
+      window.location.replace('log_food.html');
+      return true;
+    }
+    return false;
+  }
+
   async function requireAgeDeclaration() {
     const overlay=document.createElement('div'); overlay.className='modal-overlay';
     overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><p class="eyebrow">Age declaration required</p><h2>When were you born?</h2><p class="page-copy">MacroSync uses your date of birth only to apply age-appropriate content rules. It is an age declaration, not identity verification. Once saved, you cannot change it yourself.</p><form class="settings-stack" data-age-form><div class="field"><label>Date of birth</label><div class="date-picker" data-date-picker="declaration"><select id="declaredDobYear" aria-label="Birth year" required></select><select id="declaredDobMonth" aria-label="Birth month" required></select><select id="declaredDobDay" aria-label="Birth day" required></select></div><input id="declaredDob" type="hidden"></div><button class="primary-button" type="submit">Save date of birth</button><p class="settings-status" data-age-status role="status"></p></form></section>`;
@@ -196,7 +221,7 @@ const PulsePlateApp = (() => {
     const { data: existing, error } = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle();
     if (error) throw error;
     if (!existing) {
-      const { data: created, error: insertError } = await supabase.from('profiles').insert({ id: user.id, display_name: displayName, email: user.email || null, role: 'user', onboarding_complete: false }).select('*').single();
+      const { data: created, error: insertError } = await supabase.from('profiles').insert({ id: user.id, display_name: displayName, email: user.email || null, role: 'user', onboarding_complete: false, date_of_birth: user.user_metadata?.date_of_birth || null, terms_version: user.user_metadata?.terms_version || null, privacy_version: user.user_metadata?.privacy_version || null, terms_accepted_at: user.user_metadata?.terms_accepted_at || null, privacy_accepted_at: user.user_metadata?.privacy_accepted_at || null, parental_consent_required: user.user_metadata?.parental_consent_required || false, parental_consent_status: user.user_metadata?.parental_consent_status || 'not_required', parent_guardian_email: user.user_metadata?.parent_guardian_email || null }).select('*').single();
       if (insertError) throw insertError;
       return created;
     }
@@ -306,6 +331,12 @@ const PulsePlateApp = (() => {
 
     const isAdmin = profile?.is_admin === true;
     $$('[data-admin-only]').forEach(el => { el.hidden = !isAdmin; });
+    const limitedMinor = isLimitedMinorProfile(profile);
+    if (limitedMinor) {
+      $$('a[href="social.html"], a[href="friends-add.html"], a[href="friends-messages.html"], a[href="friends-meals.html"], a[href="goals.html"], a[href="progress.html"], a[href="recipes.html"], a[href="account.html"], a[href="settings.html"]').forEach(el => { el.hidden = true; });
+      $$('[data-mobile-nav] a').forEach(el => { if (!['log_food.html','log.html'].includes(el.getAttribute('href'))) el.hidden = true; });
+      $$('[data-mobile-menu] a').forEach(el => { if (!['log_food.html','log.html'].includes(el.getAttribute('href'))) el.hidden = true; });
+    }
 
     const menu = $('#alphaSettingsMenu');
     const backdrop = $('[data-mobile-sheet-backdrop]');
@@ -568,6 +599,8 @@ const PulsePlateApp = (() => {
 
   async function renderPage() {
     const page = document.body.dataset.page || location.pathname.split('/').pop().replace('.html','');
+    const currentProfile = await getCurrentProfile().catch(() => null);
+    if (isLimitedMinorProfile(currentProfile) && !['log','food-management'].includes(page)) { window.location.replace('log_food.html'); return; }
     if (page === 'dashboard' || page === 'index') await renderDashboard();
     if (page === 'log') await renderFoodLogger();
     if (page === 'account') await renderAccount();
@@ -1298,6 +1331,12 @@ const PulsePlateApp = (() => {
 
     const isAdmin = profile?.is_admin === true;
     $$('[data-admin-only]').forEach(el => { el.hidden = !isAdmin; });
+    const limitedMinor = isLimitedMinorProfile(profile);
+    if (limitedMinor) {
+      $$('a[href="social.html"], a[href="friends-add.html"], a[href="friends-messages.html"], a[href="friends-meals.html"], a[href="goals.html"], a[href="progress.html"], a[href="recipes.html"], a[href="account.html"], a[href="settings.html"]').forEach(el => { el.hidden = true; });
+      $$('[data-mobile-nav] a').forEach(el => { if (!['log_food.html','log.html'].includes(el.getAttribute('href'))) el.hidden = true; });
+      $$('[data-mobile-menu] a').forEach(el => { if (!['log_food.html','log.html'].includes(el.getAttribute('href'))) el.hidden = true; });
+    }
     const emailSearchToggle = $('[data-email-search-enabled]');
     if (emailSearchToggle) emailSearchToggle.checked = profile?.email_search_enabled !== false;
     emailSearchToggle?.addEventListener('change', async () => {
