@@ -22,9 +22,8 @@
           <a class="nav-item" href="progress.html"><span>O</span>Progress</a>
           <a class="nav-item" href="recipes.html"><span>=</span>Recipes</a>
           <a class="nav-item" href="social.html"><span>@</span>Friends</a>
-          <a class="nav-item" href="settings.html"><span>A</span>Settings</a><a class="nav-item" href="admin.html" data-admin-only hidden><span>!</span>Admin Moderation</a>
-          <a class="nav-item" href="goals.html"><span>*</span>Goals</a>
-        </nav>
+          <a class="nav-item" href="settings.html"><span>A</span>Settings</a>
+        <button class="nav-item nav-menu-button" type="button" data-mobile-menu aria-label="Open menu" aria-expanded="false"><span class="mobile-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span>Menu</span></button></nav>
         <section class="coach-card">
           <p class="eyebrow">Coach note</p>
           <h2>Balance the day.</h2>
@@ -35,22 +34,20 @@
       <section class="workspace">
         <header class="topbar">
           <div>
-            <p class="eyebrow" data-date-label>Today</p>
             <h1>Nutrition dashboard</h1>
-          </div>
-          <div class="top-actions">
-            <button class="icon-button" type="button" data-prev-day aria-label="Previous day">&lt;</button>
-            <button class="date-button" type="button" data-today-button>Today</button>
-            <button class="icon-button" type="button" data-next-day aria-label="Next day">&gt;</button>
-            <a class="primary-button" href="log_food.html">Log meal</a>
           </div>
         </header>
 
         <section class="panel calendar-panel" aria-label="Meal calendar">
-          <div class="calendar-strip">
+          <div class="calendar-mobile-header">
             <button class="icon-button" type="button" data-prev-week aria-label="Previous week">&lt;</button>
-            <div class="calendar-days" data-calendar-days></div>
+            <h2 data-calendar-month>Month</h2>
             <button class="icon-button" type="button" data-next-week aria-label="Next week">&gt;</button>
+          </div>
+          <div class="calendar-strip">
+            <button class="icon-button calendar-desktop-arrow" type="button" data-prev-week aria-label="Previous week">&lt;</button>
+            <div class="calendar-days" data-calendar-days></div>
+            <button class="icon-button calendar-desktop-arrow" type="button" data-next-week aria-label="Next week">&gt;</button>
           </div>
         </section>
 
@@ -123,17 +120,17 @@
               </div>
             </section>
 
-            <section class="panel last-used-panel" aria-labelledby="last-used-title">
+            <section class="panel last-used-panel" aria-labelledby="previous-day-title">
               <div class="panel-header">
-                <div><p class="eyebrow">Quick add</p><h2 id="last-used-title">Last used meal</h2></div>
+                <div><p class="eyebrow">Day before</p><h2 id="previous-day-title">Previous day</h2></div>
               </div>
-              <div data-last-used-meal><p class="page-copy">Loading your last meal…</p></div>
+              <div data-previous-day><p class="page-copy">Loading the previous day…</p></div>
             </section>
           </aside>
         </section>
       </section>
 
-      <nav class="mobile-nav"><a class="active" href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><a href="goals.html"><span>*</span>Goals</a></nav>
+      <nav class="mobile-nav"><a class="active" href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><button class="mobile-menu-button" type="button" data-mobile-menu aria-label="Open menu" aria-expanded="false"><span class="mobile-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span>Menu</span></button></nav>
     </main>
   </body>
 </html>

@@ -3,13 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MacroSync Friends</title>
+    <title>MacroSync Messages</title>
     <link rel="stylesheet" href="css/style.css" />
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="js/supabase-client.js" defer></script>
     <script src="js/app.js" defer></script>
   </head>
-  <body data-page="social">
+  <body data-page="friends-messages">
     <main class="app-shell">
       <aside class="sidebar" aria-label="Primary navigation">
   <a class="brand" href="index.html"><span class="brand-mark">P</span><span><strong>MacroSync</strong><small>Nutrition planner · Alpha</small></span></a>
@@ -25,7 +25,7 @@
 </aside>
       <section class="workspace">
         <header class="topbar">
-          <div><p class="eyebrow">Friends and sharing</p><h1>Friends</h1><p class="page-copy">Connect with friends, message them, and view shared nutrition data.</p></div>
+          <div><p class="eyebrow">Friends and sharing</p><h1>Messages</h1><p class="page-copy">Connect with friends, message them, and view shared nutrition data.</p></div>
         </header>
         <nav class="friends-subnav" aria-label="Friends sections">
   <a href="social.html" data-friends-tab="home">Friends</a>
@@ -34,14 +34,12 @@
   <a href="friends-meals.html" data-friends-tab="meals">Shared meals</a>
 </nav>
         <section class="panel">
-  <div class="panel-header"><div><p class="eyebrow">Friends hub</p><h2>Your connections</h2><p class="page-copy">Manage your friends from the sections above. Add people, open conversations, or view meals that have been shared with you.</p></div></div>
-  <div class="friends-feature-grid">
-    <a class="friends-feature-card" href="friends-add.html"><strong>Add new friends</strong><span>Find MacroSync users and send or accept friend requests.</span></a>
-    <a class="friends-feature-card" href="friends-messages.html"><strong>Messages</strong><span>Open conversations with your accepted friends.</span></a>
-    <a class="friends-feature-card" href="friends-meals.html"><strong>Shared meals</strong><span>View a friend's daily meals when sharing is enabled.</span></a>
-  </div>
+  <div class="panel-header"><div><p class="eyebrow">In-app messaging</p><h2 data-chat-title>Select a friend</h2><p class="page-copy">Choose an accepted friend to open the conversation.</p></div></div>
+  <div class="field compact-field"><label for="messageFriendSelect">Conversation</label><select id="messageFriendSelect" data-message-friend-select></select></div>
+  <div class="message-thread" data-message-thread><p class="page-copy">Select a friend to view messages.</p></div>
+  <div class="message-form"><div class="field"><label for="messageText">Message</label><input id="messageText" data-message-text placeholder="Write a message…" autocomplete="off" /></div><button class="primary-button" type="button" data-send-message>Send</button></div>
 </section>
-<section class="panel"><div class="panel-header"><div><p class="eyebrow">Connections</p><h2>Your friends</h2></div></div><div class="friend-list" data-friend-list><p class="page-copy">Loading friends…</p></div></section>
+<section class="panel"><div class="panel-header"><div><p class="eyebrow">Your friends</p><h2>Choose a conversation</h2></div></div><div class="friend-list" data-friend-list><p class="page-copy">Loading friends…</p></div></section>
       </section>
       <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a class="active" href="social.html"><span>@</span>Friends</a><button class="mobile-menu-button" type="button" data-mobile-menu aria-label="Open menu" aria-expanded="false"><span class="mobile-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span>Menu</span></button></nav>
     </main>

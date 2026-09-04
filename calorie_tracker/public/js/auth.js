@@ -15,9 +15,47 @@
   const displayName = document.querySelector('#displayName');
   const dobField = document.querySelector('#dobField');
   const dateOfBirth = document.querySelector('#dateOfBirth');
+  const dobYear = document.querySelector('#dateOfBirthYear');
+  const dobMonth = document.querySelector('#dateOfBirthMonth');
+  const dobDay = document.querySelector('#dateOfBirthDay');
 
   let supabase;
   let mode = 'login';
+
+  function setupDatePicker() {
+    if (!dobYear || !dobMonth || !dobDay || !dateOfBirth) return;
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const earliestYear = currentYear - 120;
+    dobYear.innerHTML = '<option value="">Year</option>' + Array.from({ length: currentYear - earliestYear + 1 }, (_, i) => {
+      const year = currentYear - i;
+      return `<option value="${year}">${year}</option>`;
+    }).join('');
+    dobMonth.innerHTML = '<option value="">Month</option>' + Array.from({ length: 12 }, (_, i) => {
+      const value = String(i + 1).padStart(2, '0');
+      return `<option value="${value}">${new Date(2000, i, 1).toLocaleString(undefined, { month: 'long' })}</option>`;
+    }).join('');
+
+    function refreshDays() {
+      const year = Number(dobYear.value);
+      const month = Number(dobMonth.value);
+      const previous = dobDay.value;
+      const daysInMonth = year && month ? new Date(year, month, 0).getDate() : 31;
+      dobDay.innerHTML = '<option value="">Day</option>' + Array.from({ length: daysInMonth }, (_, i) => {
+        const value = String(i + 1).padStart(2, '0');
+        return `<option value="${value}">${i + 1}</option>`;
+      }).join('');
+      if (Number(previous) <= daysInMonth) dobDay.value = previous;
+    }
+    function syncDate() {
+      if (dobYear.value && dobMonth.value && dobDay.value) dateOfBirth.value = `${dobYear.value}-${dobMonth.value}-${dobDay.value}`;
+      else dateOfBirth.value = '';
+    }
+    dobYear.addEventListener('change', () => { refreshDays(); syncDate(); });
+    dobMonth.addEventListener('change', () => { refreshDays(); syncDate(); });
+    dobDay.addEventListener('change', syncDate);
+    refreshDays();
+  }
 
   function isRecoveryLink() {
     const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
@@ -31,6 +69,8 @@
     status.textContent = error.message;
     return;
   }
+
+  setupDatePicker();
 
   const recovery = isRecoveryLink();
 
@@ -154,7 +194,7 @@
       const name = displayName.value.trim() || 'MacroSync User';
       const dob = dateOfBirth?.value || '';
       if (mode === 'signup') {
-        const blocked = ['fuck','fucker','fucking','motherfucker','shit','shitty','bullshit','bitch','bitches','asshole','dumbass','bastard','cunt','dick','dickhead','pussy','cock','slut','whore','damn','crap','piss','jackass','asshat','prick','twat','wanker','porn','pornography','nude','nudes','naked','sex','sexual','sexy','onlyfans','sexting','rape','rapist','pedo','pedophile','groomer','nigger','niggers','nigga','niggas','chink','chinks','spic','spics','kike','kikes','gook','gooks','wetback','wetbacks','beaner','beaners','raghead','ragheads','coon','coons','fag','fags','faggot','faggots','dyke','dykes','tranny','trannies'];
+        const blocked = ['fuck','fucker','fucking','motherfucker','shit','shitty','bullshit','bitch','bitches','asshole','dumbass','bastard','cunt','dick','dickhead','pussy','cock','slut','whore','damn','crap','piss','jackass','asshat','prick','twat','wanker','porn','pornography','nude','nudes','naked','sex','sexual','sexy','onlyfans','sexting','rape','rapist','pedo','pedophile','groomer','nigger','niggers','nigga','niggas','chink','chinks','spic','spics','kike','kikes','gook','gooks','wetback','wetbacks','beaner','beaners','raghead','ragheads','coon','coons','fag','fags','faggot','faggots','dyke','dykes','tranny','trannies','bbc'];
         const leet = {'@':'a','4':'a','3':'e','1':'i','!':'i','0':'o','$':'s','5':'s','7':'t','+':'t','8':'b'};
         const normalize = value => value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[0134578@$!+]/g,c=>leet[c]||c).replace(/[^a-z0-9]/g,'');
         const normalizedName = normalize(name);

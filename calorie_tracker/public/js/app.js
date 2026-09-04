@@ -67,26 +67,50 @@ const PulsePlateApp = (() => {
   const PROFANITY_TERMS = [
     'fuck','fucker','fucking','motherfucker','shit','shitty','bullshit','bitch','bitches',
     'asshole','dumbass','bastard','cunt','dick','dickhead','pussy','cock','slut','whore',
-    'damn','hell','crap','piss','jackass','asshat','prick','twat','wanker'
+    'damn','hell','crap','piss','jackass','asshat','prick','twat','wanker',
+    // Common abbreviated / intentionally shortened spellings.
+    'fck','fuk','fking','fkng','sht','btch','bch','a55','dck','dckhead','p55y','wh0re','pr1ck'
   ];
   const HATE_TERMS = [
     'nigger','niggers','nigga','niggas','chink','chinks','spic','spics','kike','kikes',
     'gook','gooks','wetback','wetbacks','beaner','beaners','raghead','ragheads','coon','coons',
-    'fag','fags','faggot','faggots','dyke','dykes','tranny','trannies'
+    'fag','fags','faggot','faggots','dyke','dykes','tranny','trannies',
+    // Common shortened / leetspeak variants that should not bypass the hate-speech filter.
+    'nig','nigg','n1g','n1gg','n1gga','ch1nk','sp1c','k1ke','g00k','w3tback','b3aner','c00n',
+    'r4ghead','f4g','f4ggot','dyk3','tr4nny'
   ];
+  const HATE_ABBREVIATIONS = ['nig','nigg','n1g','n1gg','n1gga'];
   const SEXUAL_TERMS = ['porn','pornography','nude','nudes','naked','onlyfans','sexual services','sexually explicit','child sexual','minor sexual','sexting'];
+  // Short sexual abbreviations are checked separately because they are often
+  // embedded in otherwise harmless-looking display names (for example, an
+  // abbreviation followed by a nickname). Do not treat these as ordinary words.
+  const SEXUAL_ABBREVIATIONS = ['bbc'];
   const LEET_MAP = { '@':'a','4':'a','3':'e','1':'i','!':'i','0':'o','$':'s','5':'s','7':'t','+':'t','8':'b'};
   function normalizeModerationText(text) {
     return String(text || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'')
-      .replace(/[0134578@$!+]/g, c => LEET_MAP[c] || c).replace(/[^a-z0-9]+/g,'');
+      .replace(/[0134578@$!+]/g, c => LEET_MAP[c] || c).replace(/[^a-z0-9]+/g,'').replace(/(.)\1{2,}/g,'$1$1');
   }
   function tokenModerationText(text) {
     return String(text || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'')
-      .replace(/[0134578@$!+]/g, c => LEET_MAP[c] || c).replace(/[^a-z0-9]+/g,' ').trim();
+      .replace(/[0134578@$!+]/g, c => LEET_MAP[c] || c).replace(/[^a-z0-9]+/g,' ').replace(/(.)\1{2,}/g,'$1$1').trim();
   }
+  function vowelStripped(value) { return value.replace(/[aeiou]/g,''); }
   function containsTerm(text, terms) {
-    const normalized=normalizeModerationText(text), tokens=tokenModerationText(text).split(/\s+/).filter(Boolean);
-    return terms.some(term => tokens.includes(term) || normalized.includes(term));
+    const normalized=normalizeModerationText(text);
+    const tokens=tokenModerationText(text).split(/\s+/).filter(Boolean);
+    const strippedTokens=tokens.map(vowelStripped);
+    return terms.some(term => {
+      const compact=normalizeModerationText(term);
+      // Exact/substring matching catches punctuation, spaces, and many leetspeak variants.
+      if (tokens.includes(compact) || (compact.length >= 4 && normalized.includes(compact))) return true;
+      // For short forms, compare vowel-stripped tokens. This catches deliberate vowel
+      // removal without making tiny fragments match inside normal words.
+      const skeleton=vowelStripped(compact);
+      return skeleton.length >= 3 && strippedTokens.some(token => token === skeleton);
+    }) || HATE_ABBREVIATIONS.some(term => {
+      const compact=normalizeModerationText(term);
+      return tokens.includes(compact);
+    });
   }
   const DOXXING_PATTERNS = [
     /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,
@@ -100,7 +124,7 @@ const PulsePlateApp = (() => {
     const value=String(text||'').trim();
     if(!value) return 'Please enter a display name.';
     if(value.length>80) return 'Display names must be 80 characters or fewer.';
-    if(containsTerm(value,PROFANITY_TERMS)||containsTerm(value,HATE_TERMS)||containsTerm(value,SEXUAL_TERMS)) return 'That display name contains language or content that is not allowed.';
+    if(containsTerm(value,PROFANITY_TERMS)||containsTerm(value,HATE_TERMS)||containsTerm(value,SEXUAL_TERMS)||containsTerm(value,SEXUAL_ABBREVIATIONS)) return 'That display name contains language or content that is not allowed.';
     if(DOXXING_PATTERNS.some(rx=>rx.test(value))){resetPatterns();return 'Display names cannot contain contact or location information.';} resetPatterns(); return null;
   }
   function validateMessageText(text, isMinor=false) {
@@ -124,7 +148,7 @@ const PulsePlateApp = (() => {
       const profile = await ensureProfile();
       await loadUserMeals();
       if (profile?.date_of_birth === null || profile?.date_of_birth === undefined) await requireAgeDeclaration();
-      wireGlobalAuth();
+      wireGlobalAuth(profile);
       if (!profile?.onboarding_complete) {
         await showOnboarding(profile);
         return;
@@ -147,9 +171,24 @@ const PulsePlateApp = (() => {
   }
   async function requireAgeDeclaration() {
     const overlay=document.createElement('div'); overlay.className='modal-overlay';
-    overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><p class="eyebrow">Age declaration required</p><h2>When were you born?</h2><p class="page-copy">MacroSync uses your date of birth only to apply age-appropriate content rules. It is an age declaration, not identity verification. Once saved, you cannot change it yourself.</p><form class="settings-stack" data-age-form><div class="field"><label for="declaredDob">Date of birth</label><input id="declaredDob" type="date" required max="${new Date().toISOString().slice(0,10)}"></div><button class="primary-button" type="submit">Save date of birth</button><p class="settings-status" data-age-status role="status"></p></form></section>`;
+    overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><p class="eyebrow">Age declaration required</p><h2>When were you born?</h2><p class="page-copy">MacroSync uses your date of birth only to apply age-appropriate content rules. It is an age declaration, not identity verification. Once saved, you cannot change it yourself.</p><form class="settings-stack" data-age-form><div class="field"><label>Date of birth</label><div class="date-picker" data-date-picker="declaration"><select id="declaredDobYear" aria-label="Birth year" required></select><select id="declaredDobMonth" aria-label="Birth month" required></select><select id="declaredDobDay" aria-label="Birth day" required></select></div><input id="declaredDob" type="hidden"></div><button class="primary-button" type="submit">Save date of birth</button><p class="settings-status" data-age-status role="status"></p></form></section>`;
     document.body.appendChild(overlay);
-    overlay.querySelector('[data-age-form]').addEventListener('submit',async e=>{e.preventDefault();const status=overlay.querySelector('[data-age-status]');const dob=overlay.querySelector('#declaredDob').value;if(!dob){status.textContent='Enter your date of birth.';return;}const age=ageInYears(dob);if(age<13){status.textContent='MacroSync accounts are not available for users under 13.';return;}if(age>120){status.textContent='Please enter a valid date of birth.';return;}status.textContent='Saving…';const {error}=await supabase.from('profiles').update({date_of_birth:dob}).eq('id',user.id).is('date_of_birth',null);if(error){status.textContent=error.message;return;}overlay.remove();window.location.reload();});
+    const yearSelect = overlay.querySelector('#declaredDobYear');
+    const monthSelect = overlay.querySelector('#declaredDobMonth');
+    const daySelect = overlay.querySelector('#declaredDobDay');
+    const hiddenDob = overlay.querySelector('#declaredDob');
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const earliestYear = currentYear - 120;
+    yearSelect.innerHTML = '<option value="">Year</option>' + Array.from({ length: currentYear - earliestYear + 1 }, (_, i) => { const year = currentYear - i; return `<option value="${year}">${year}</option>`; }).join('');
+    monthSelect.innerHTML = '<option value="">Month</option>' + Array.from({ length: 12 }, (_, i) => { const value = String(i + 1).padStart(2, '0'); return `<option value="${value}">${new Date(2000, i, 1).toLocaleString(undefined, { month: 'long' })}</option>`; }).join('');
+    const refreshDays = () => { const year = Number(yearSelect.value); const month = Number(monthSelect.value); const previous = daySelect.value; const daysInMonth = year && month ? new Date(year, month, 0).getDate() : 31; daySelect.innerHTML = '<option value="">Day</option>' + Array.from({ length: daysInMonth }, (_, i) => { const value = String(i + 1).padStart(2, '0'); return `<option value="${value}">${i + 1}</option>`; }).join(''); if (Number(previous) <= daysInMonth) daySelect.value = previous; };
+    const syncDob = () => { hiddenDob.value = yearSelect.value && monthSelect.value && daySelect.value ? `${yearSelect.value}-${monthSelect.value}-${daySelect.value}` : ''; };
+    yearSelect.addEventListener('change', () => { refreshDays(); syncDob(); });
+    monthSelect.addEventListener('change', () => { refreshDays(); syncDob(); });
+    daySelect.addEventListener('change', syncDob);
+    refreshDays();
+    overlay.querySelector('[data-age-form]').addEventListener('submit',async e=>{e.preventDefault();const status=overlay.querySelector('[data-age-status]');const dob=hiddenDob.value;if(!dob){status.textContent='Enter your date of birth.';return;}const selected=new Date(`${dob}T00:00:00`);if(selected>today){status.textContent='Your date of birth cannot be in the future.';return;}const age=ageInYears(dob);if(age<13){status.textContent='MacroSync accounts are not available for users under 13.';return;}if(age>120){status.textContent='Please enter a valid date of birth.';return;}status.textContent='Saving…';const {error}=await supabase.from('profiles').update({date_of_birth:dob}).eq('id',user.id).is('date_of_birth',null);if(error){status.textContent=error.message;return;}overlay.remove();window.location.reload();});
   }
 
   async function ensureProfile() {
@@ -233,44 +272,134 @@ const PulsePlateApp = (() => {
     });
   }
 
-  function wireGlobalAuth() {
+  function wireGlobalAuth(profile) {
     const topbar = $('.topbar');
     if (!topbar || $('#alphaSettingsMenu')) return;
 
     const bar = document.createElement('div');
     bar.id = 'alphaAccountBar';
     bar.className = 'alpha-account-bar';
-    bar.innerHTML = `
-      <span class="alpha-account-email">${escapeHtml(user.email || '')}</span>
-      <div class="settings-menu-wrap">
-        <button class="settings-burger" id="settingsBurger" type="button" aria-label="Open settings menu" aria-expanded="false">
-          <span></span><span></span><span></span>
-          <span class="notification-badge" data-notification-badge hidden>0</span>
-        </button>
-        <div class="settings-menu" id="alphaSettingsMenu" hidden>
-          <div class="settings-menu-title">MacroSync</div>
+    bar.innerHTML = `<span class="alpha-account-email">${escapeHtml(user.email || '')}</span>`;
+    topbar.appendChild(bar);
+
+    const menuMarkup = `
+      <div class="mobile-menu-sheet-backdrop" data-mobile-sheet-backdrop hidden></div>
+      <section class="mobile-menu-sheet" id="alphaSettingsMenu" hidden aria-label="MacroSync menu" aria-modal="true" role="dialog">
+        <div class="mobile-menu-handle" data-mobile-menu-handle aria-hidden="true"><span></span></div>
+        <div class="mobile-menu-sheet-header">
+          <div><p class="eyebrow">MacroSync</p><h2>Menu</h2></div>
+          <button class="modal-close" type="button" data-close-mobile-menu aria-label="Close menu">×</button>
+        </div>
+        <div class="mobile-menu-sheet-content" data-mobile-menu-content>
           <a href="index.html">Dashboard</a>
           <a href="settings.html">Settings</a>
+          <a href="goals.html">Goals</a>
+          <a href="admin.html" data-admin-only hidden>Admin Moderation</a>
           <button type="button" data-notifications>Notifications <span class="menu-badge" data-menu-notification-count hidden>0</span></button>
           <button type="button" data-message-notification-settings>Message notifications <span data-message-notification-state>On</span></button>
           <button type="button" data-theme-toggle>Light mode</button>
           <button type="button" data-enable-browser-notifications>Enable browser notifications</button>
           <button type="button" data-logout>Log out</button>
         </div>
-      </div>`;
-    topbar.appendChild(bar);
+      </section>`;
+    document.body.insertAdjacentHTML('beforeend', menuMarkup);
 
-    const burger = $('#settingsBurger');
+    const isAdmin = profile?.is_admin === true;
+    $$('[data-admin-only]').forEach(el => { el.hidden = !isAdmin; });
+
     const menu = $('#alphaSettingsMenu');
-    const closeMenu = () => { menu.hidden = true; burger.setAttribute('aria-expanded', 'false'); };
-    burger.addEventListener('click', (event) => {
+    const backdrop = $('[data-mobile-sheet-backdrop]');
+    const menuButtons = $$('[data-mobile-menu]');
+    let menuStartY = 0;
+    let menuCurrentY = 0;
+    let menuDragging = false;
+
+    const setMenuTransform = (offset) => {
+      menu.style.setProperty('--menu-drag-offset', `${Math.max(0, offset)}px`);
+    };
+    const openMenu = () => {
+      menu.hidden = false;
+      backdrop.hidden = false;
+      document.body.classList.add('mobile-menu-open');
+      requestAnimationFrame(() => {
+        menu.classList.add('is-open');
+        backdrop.classList.add('is-open');
+      });
+      menuButtons.forEach(button => button.setAttribute('aria-expanded', 'true'));
+    };
+    const closeMenu = () => {
+      menu.classList.remove('is-open');
+      backdrop.classList.remove('is-open');
+      document.body.classList.remove('mobile-menu-open');
+      menu.style.removeProperty('--menu-drag-offset');
+      menuButtons.forEach(button => button.setAttribute('aria-expanded', 'false'));
+      setTimeout(() => { menu.hidden = true; backdrop.hidden = true; }, 260);
+    };
+
+    menuButtons.forEach(button => button.addEventListener('click', (event) => {
+      event.preventDefault();
       event.stopPropagation();
-      menu.hidden = !menu.hidden;
-      burger.setAttribute('aria-expanded', String(!menu.hidden));
-    });
-    document.addEventListener('click', (event) => {
-      if (!bar.contains(event.target)) closeMenu();
-    });
+      if (menu.hidden) openMenu(); else closeMenu();
+    }));
+    backdrop.addEventListener('click', closeMenu);
+    $('[data-close-mobile-menu]')?.addEventListener('click', closeMenu);
+
+    const handle = $('[data-mobile-menu-handle]');
+    handle?.addEventListener('touchstart', event => {
+      menuStartY = event.touches[0].clientY;
+      menuCurrentY = menuStartY;
+      menuDragging = true;
+      menu.style.transition = 'none';
+    }, { passive: true });
+    handle?.addEventListener('touchmove', event => {
+      if (!menuDragging) return;
+      menuCurrentY = event.touches[0].clientY;
+      setMenuTransform(Math.max(0, menuCurrentY - menuStartY));
+    }, { passive: true });
+    handle?.addEventListener('touchend', () => {
+      if (!menuDragging) return;
+      menuDragging = false;
+      menu.style.transition = '';
+      if (menuCurrentY - menuStartY > 90) closeMenu();
+      else if (menuStartY - menuCurrentY > 70) {
+        menu.classList.add('is-expanded');
+        setMenuTransform(0);
+      } else setMenuTransform(0);
+    }, { passive: true });
+
+    menu.addEventListener('touchstart', event => {
+      menuStartY = event.touches[0].clientY;
+      menuCurrentY = menuStartY;
+      menuDragging = true;
+      menu.style.transition = 'none';
+    }, { passive: true });
+    menu.addEventListener('touchmove', event => {
+      if (!menuDragging) return;
+      menuCurrentY = event.touches[0].clientY;
+      const content = $('[data-mobile-menu-content]');
+      const atTop = !content || content.scrollTop <= 0;
+      const delta = menuCurrentY - menuStartY;
+      if (delta > 0 && atTop) setMenuTransform(delta);
+    }, { passive: true });
+    menu.addEventListener('touchend', () => {
+      if (!menuDragging) return;
+      menuDragging = false;
+      menu.style.transition = '';
+      if (menuCurrentY - menuStartY > 90) closeMenu();
+      else if (menuStartY - menuCurrentY > 70) menu.classList.add('is-expanded');
+      setMenuTransform(0);
+    }, { passive: true });
+
+    const content = $('[data-mobile-menu-content]');
+    content?.addEventListener('touchstart', event => {
+      menuStartY = event.touches[0].clientY;
+      menuCurrentY = menuStartY;
+      menuDragging = false;
+    }, { passive: true });
+    content?.addEventListener('touchmove', event => {
+      menuCurrentY = event.touches[0].clientY;
+    }, { passive: true });
+
     $('[data-theme-toggle]')?.addEventListener('click', () => {
       const next = document.body.classList.contains('light-theme') ? 'dark' : 'light';
       localStorage.setItem('macrosync-theme', next);
@@ -289,15 +418,7 @@ const PulsePlateApp = (() => {
     });
     applyTheme();
     refreshNotifications().catch(console.error);
-    refreshMessageNotificationSetting().catch(console.error);
-    if (!window.__macroSyncNotificationTimer) {
-      window.__macroSyncNotificationTimer = setInterval(() => refreshNotifications().catch(console.error), 4000);
-    }
-    $('[data-logout]')?.addEventListener('click', async () => {
-      closeMenu();
-      await supabase.auth.signOut();
-      window.location.href='auth.html';
-    });
+    $$('[data-mobile-menu]').forEach(button => button.setAttribute('aria-expanded', 'false'));
   }
 
   function applyTheme() {
@@ -454,7 +575,7 @@ const PulsePlateApp = (() => {
     if (page === 'goals') await renderGoals();
     if (page === 'progress') await renderProgress();
     if (page === 'recipes') await renderRecipes();
-    if (page === 'social') await renderSocial();
+    if (page === 'social' || page === 'friends-add' || page === 'friends-messages' || page === 'friends-meals') await renderSocial();
     if (page === 'admin') await renderAdmin();
     wireDateControls();
   }
@@ -655,8 +776,8 @@ const PulsePlateApp = (() => {
     $$('.ring-fill').forEach(r => r.style.setProperty('--ring-offset', 352 - Math.min(totals.calories/goals.calorie_goal,1)*352));
     await renderMeals(entries);
     await renderMealManager();
-    await renderLastUsedMeal();
-    renderCalendar();
+    await renderPreviousDay();
+    await renderCalendar();
   }
 
   function totalsFor(entries) { return entries.reduce((t,e)=>({calories:t.calories+Number(e.calories||0),protein:t.protein+Number(e.protein||0),carbs:t.carbs+Number(e.carbs||0),fat:t.fat+Number(e.fat||0)}),{calories:0,protein:0,carbs:0,fat:0}); }
@@ -729,29 +850,58 @@ const PulsePlateApp = (() => {
     overlay.querySelector('[data-save-move]').onclick=async()=>{const meal=overlay.querySelector('#moveEntryMeal').value;if(meal===entry.meal){overlay.remove();return;}const {error}=await supabase.from('food_entries').update({meal}).eq('id',entry.id).eq('user_id',user.id);if(error)return alert(error.message);overlay.remove();await renderPage();};
   }
 
-  async function getLastUsedMeal() {
-    const {data,error}=await supabase.from('food_entries').select('*').eq('user_id',user.id).order('created_at',{ascending:false}).limit(100);
-    if(error) throw error;
-    const rows=data||[]; if(!rows.length)return null;
-    const latest=rows[0];
-    const items=rows.filter(r=>r.logged_date===latest.logged_date && r.meal===latest.meal).sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at)));
-    return {date:latest.logged_date,meal:latest.meal,items};
-  }
-
-  async function renderLastUsedMeal() {
-    const box=$('[data-last-used-meal]'); if(!box)return;
+  async function renderPreviousDay() {
+    const box = $('[data-previous-day]'); if (!box) return;
+    const previousDate = addDays(selectedDate, -1);
     try {
-      const meal=await getLastUsedMeal();
-      if(!meal||!meal.items.length){box.innerHTML='<p class="page-copy">No previous meal yet.</p>';return;}
-      const totals=totalsFor(meal.items);
-      box.innerHTML=`<button class="last-used-meal-card" type="button" data-add-last-used-meal><div><p class="eyebrow">${escapeHtml(meal.meal)}</p><h3>Last used meal</h3><span>${meal.items.length} item${meal.items.length===1?'':'s'} · ${moneyless(totals.calories)} cal</span></div><strong>Add</strong></button>`;
-      box.querySelector('[data-add-last-used-meal]').onclick=async()=>{
-        const payload=meal.items.map(item=>({user_id:user.id,logged_date:dateKey(selectedDate),meal:item.meal,food_name:item.food_name,serving:item.serving,fdc_id:item.fdc_id,calories:item.calories,protein:item.protein,carbs:item.carbs,fat:item.fat}));
-        const {error}=await supabase.from('food_entries').insert(payload); if(error)return alert(error.message); await renderPage();
-      };
-    } catch(error) { box.innerHTML=`<p class="page-copy">${escapeHtml(error.message)}</p>`; }
+      const { data, error } = await supabase.from('food_entries').select('*').eq('user_id', user.id).eq('logged_date', dateKey(previousDate)).order('created_at');
+      if (error) throw error;
+      const entries = data || [];
+      const label = previousDate.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+      if (!entries.length) {
+        box.innerHTML = `<div class="previous-day-card"><div><p class="eyebrow">${escapeHtml(label)}</p><h3>No food logged</h3><span>This day has no entries yet.</span></div><button class="ghost-button" type="button" data-view-previous-day>View day</button></div>`;
+      } else {
+        const totals = totalsFor(entries);
+        const meals = [...new Set(entries.map(e => String(e.meal || '').trim()).filter(Boolean))];
+        box.innerHTML = `<div class="previous-day-card"><div><p class="eyebrow">${escapeHtml(label)}</p><h3>${entries.length} food item${entries.length === 1 ? '' : 's'} logged</h3><span>${meals.length} meal${meals.length === 1 ? '' : 's'} · ${moneyless(totals.calories)} cal</span></div><button class="ghost-button" type="button" data-view-previous-day>View day</button></div>`;
+      }
+      box.querySelector('[data-view-previous-day]')?.addEventListener('click', async () => {
+        selectedDate = previousDate;
+        weekStart = startOfWeek(selectedDate);
+        await renderPage();
+      });
+    } catch (error) {
+      box.innerHTML = `<p class="page-copy">${escapeHtml(error.message)}</p>`;
+    }
   }
 
+  async function renderCalendar() {
+    const cal = $('[data-calendar-days]'); if (!cal) return;
+    const monthLabel = $('[data-calendar-month]');
+    if (monthLabel) {
+      monthLabel.textContent = weekStart.toLocaleDateString(undefined, { month: 'long' });
+    }
+    let loggedKeys = new Set();
+    try {
+      const endDate = addDays(weekStart, 6);
+      const { data, error } = await supabase.from('food_entries').select('logged_date').eq('user_id', user.id).gte('logged_date', dateKey(weekStart)).lte('logged_date', dateKey(endDate));
+      if (error) throw error;
+      loggedKeys = new Set((data || []).map(row => String(row.logged_date)));
+    } catch (error) {
+      console.warn('Could not load weekly calendar status:', error.message);
+    }
+    cal.innerHTML = '';
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(weekStart, i);
+      const logged = loggedKeys.has(dateKey(d));
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'calendar-day ' + (logged ? 'logged' : 'not-logged') + (dateKey(d) === dateKey(selectedDate) ? ' active' : '');
+      b.innerHTML = `<span>${d.toLocaleDateString(undefined, { weekday: 'short' })}</span><strong>${d.getDate()}</strong><small>${logged ? 'Logged' : 'Not logged'}</small>`;
+      b.onclick = async () => { selectedDate = d; await renderPage(); };
+      cal.appendChild(b);
+    }
+  }
   async function renderFoodLogger() {
     renderCalendar();
     const search = $('[data-food-search]');
@@ -1402,9 +1552,14 @@ const PulsePlateApp = (() => {
 
   async function renderSocial() {
     if (messagePollTimer) clearInterval(messagePollTimer);
+    const page = document.body.dataset.page || 'social';
     const search = $('[data-friend-search]');
     const peopleList = $('[data-people-list]');
-    if (!peopleList) return;
+    const friendList = $('[data-friend-list]');
+    const messageThread = $('[data-message-thread]');
+    const sharedMealList = $('[data-shared-meal-list]');
+    const hasSocialSurface = peopleList || friendList || messageThread || sharedMealList;
+    if (!hasSocialSurface) return;
 
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
@@ -1424,18 +1579,49 @@ const PulsePlateApp = (() => {
     }
 
     const drawPeople = async () => {
+      if (!search && !peopleList) return;
       await loadSocialData(search?.value || '');
       renderPeople(search?.value || '');
-      renderFriendsList(); renderFriendSelectors();
+      renderFriendsList();
+      renderFriendSelectors();
+      wireSocialButtons(profile);
     };
-    if (search) { let timer; search.oninput = () => { clearTimeout(timer); timer=setTimeout(()=>drawPeople().catch(console.error),220); }; }
-    drawPeople();
+
+    if (search) {
+      let timer;
+      search.oninput = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => drawPeople().catch(console.error), 220);
+      };
+    }
+
+    await loadSocialData('');
+    renderPeople(search?.value || '');
     renderFriendsList();
     renderFriendSelectors();
     renderSharingControls(profile);
     await renderMessages();
     await renderSharedMeals(profile);
     wireSocialButtons(profile);
+
+    if (page === 'friends-add') {
+      // Add-friends page is search-driven; no message polling is needed.
+      return;
+    }
+
+    if (page === 'friends-messages') {
+      messagePollTimer = setInterval(async () => {
+        if (selectedFriendId) await renderMessages().catch(console.error);
+      }, 3000);
+      return;
+    }
+
+    if (page === 'friends-meals') {
+      messagePollTimer = setInterval(async () => {
+        if (selectedMealFriendId) await renderSharedMeals(profile).catch(console.error);
+      }, 3000);
+      return;
+    }
 
     messagePollTimer = setInterval(async () => {
       if (selectedFriendId) await renderMessages().catch(console.error);

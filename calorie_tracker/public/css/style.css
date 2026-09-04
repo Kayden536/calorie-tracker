@@ -625,6 +625,17 @@ a.date-button {
   font-size: 0.7rem;
   font-weight: 850;
 }
+.mobile-nav .mobile-menu-button {
+  display: grid;
+  place-items: center;
+  gap: 0.12rem;
+  min-height: 3.15rem;
+  padding: 0;
+  border-radius: 0.85rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 850;
+}
 
 .mobile-nav span {
   font-size: 1rem;
@@ -1812,3 +1823,252 @@ body.light-theme .food-source-tab.active{background:var(--accent,#6d55e8);border
 .food-author { margin: .2rem 0; font-size: .82rem; opacity: .75; }
 .community-food-card, .personal-food-card { display: flex; align-items: center; gap: .75rem; text-align: left; cursor: pointer; }
 .community-food-card .food-card-main, .personal-food-card .food-card-main { cursor: pointer; }
+
+/* Quick date-of-birth picker: year is directly selectable instead of requiring
+   repeated month navigation through the browser's native date control. */
+.date-picker {
+  display: grid;
+  grid-template-columns: 1.15fr 1.35fr 0.8fr;
+  gap: 10px;
+}
+.date-picker select {
+  width: 100%;
+  min-width: 0;
+}
+@media (max-width: 520px) {
+  .date-picker {
+    grid-template-columns: 1fr;
+  }
+}
+
+.calendar-mobile-header { display: none; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .7rem; }
+.calendar-mobile-header h2 { margin: 0; text-align: center; font-size: 1rem; flex: 1; }
+.calendar-day small { font-size: .65rem; color: var(--muted); }
+.calendar-day.logged::after { content: ""; width: .35rem; height: .35rem; border-radius: 999px; background: var(--red); }
+.calendar-day.not-logged::after { content: ""; width: .35rem; height: .35rem; border-radius: 999px; background: var(--line); }
+.calendar-day.active small { color: rgba(255,255,255,.8); }
+.calendar-day.active::after { background: #fff; }
+.previous-day-card { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:1rem; border:1px solid var(--line); border-radius:16px; background:var(--surface-2); }
+.previous-day-card h3 { margin:.15rem 0; }
+.previous-day-card span { color:var(--muted); font-size:.85rem; }
+@media (max-width: 759px) {
+  .calendar-mobile-header { display: flex; }
+  .calendar-desktop-arrow { display: none; }
+  .calendar-strip { display: block; }
+  .calendar-days { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: .25rem; }
+  .calendar-day { min-height: 4.1rem; padding: .35rem .05rem; }
+  .calendar-day span { font-size: .7rem; }
+  .calendar-day strong { font-size: .95rem; }
+  .calendar-day small { font-size: .55rem; }
+  .previous-day-card { align-items: flex-start; }
+}
+
+/* Shared burger-menu button. It appears in the fixed mobile nav and the desktop sidebar nav. */
+.mobile-menu-button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.mobile-menu-icon {
+  display: grid;
+  gap: 3px;
+  width: 1.1rem;
+  margin: 0 auto .2rem;
+}
+.mobile-menu-icon i {
+  display: block;
+  height: 2px;
+  border-radius: 99px;
+  background: currentColor;
+}
+.nav-menu-button {
+  width: 100%;
+  text-align: left;
+}
+.nav-menu-button .mobile-menu-icon {
+  flex: 0 0 1.7rem;
+  width: 1.7rem;
+  height: 1.7rem;
+  margin: 0;
+  padding: .45rem;
+  gap: 3px;
+  place-content: center;
+  border-radius: .55rem;
+  background: var(--surface-2);
+}
+.nav-menu-button .mobile-menu-icon i { width: .85rem; }
+
+/* Mobile navigation menu: bottom sheet that can be swiped upward to expand. */
+.mobile-menu-sheet-backdrop[hidden],
+.mobile-menu-sheet[hidden] { display: none !important; }
+.mobile-menu-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0,0,0,.5);
+  opacity: 0;
+  transition: opacity .26s ease;
+}
+.mobile-menu-sheet-backdrop.is-open { opacity: 1; }
+.mobile-menu-sheet {
+  --menu-drag-offset: 0px;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2001;
+  max-height: 88vh;
+  padding: .45rem 1rem calc(1rem + env(safe-area-inset-bottom));
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: 1.25rem 1.25rem 0 0;
+  background: var(--surface);
+  box-shadow: 0 -20px 60px rgba(0,0,0,.28);
+  transform: translateY(calc(100% + var(--menu-drag-offset)));
+  transition: transform .26s ease;
+  overflow: hidden;
+}
+.mobile-menu-sheet.is-open { transform: translateY(var(--menu-drag-offset)); }
+.mobile-menu-sheet.is-expanded { max-height: calc(100vh - env(safe-area-inset-top)); border-radius: 1rem 1rem 0 0; }
+.mobile-menu-handle { display:flex; justify-content:center; padding:.35rem .25rem .55rem; touch-action:none; cursor:grab; }
+.mobile-menu-handle span { width:3rem; height:.3rem; border-radius:999px; background:var(--muted); opacity:.55; }
+.mobile-menu-sheet-header { display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; padding:.25rem .25rem .8rem; }
+.mobile-menu-sheet-header h2 { margin:.1rem 0 0; }
+.mobile-menu-sheet-header .modal-close { position:static; font-size:1.8rem; }
+.mobile-menu-sheet-content { display:grid; gap:.4rem; max-height:calc(88vh - 6rem); overflow:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; padding:.15rem .1rem .4rem; }
+.mobile-menu-sheet-content a,
+.mobile-menu-sheet-content button { display:flex; width:100%; align-items:center; justify-content:space-between; gap:.6rem; min-height:3rem; padding:.75rem .8rem; border:0; border-radius:.75rem; background:transparent; color:var(--ink); font:inherit; font-weight:750; text-align:left; text-decoration:none; cursor:pointer; }
+.mobile-menu-sheet-content a:hover,
+.mobile-menu-sheet-content button:hover { background:var(--surface-2); }
+body.mobile-menu-open { overflow:hidden; }
+@media (max-width:759px) {
+  .alpha-account-email { display:none; }
+  .topbar .alpha-account-bar { margin-left:auto; }
+}
+
+/* Friends section navigation */
+.friends-subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .55rem;
+  margin: 0 0 1rem;
+  padding: .35rem;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: var(--surface-2);
+}
+.friends-subnav a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.5rem;
+  padding: 0 .9rem;
+  border-radius: .75rem;
+  color: var(--muted);
+  font-weight: 800;
+  text-decoration: none;
+}
+.friends-subnav a:hover,
+.friends-subnav a.active {
+  color: var(--ink);
+  background: var(--surface-3);
+}
+.friends-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .8rem;
+}
+.friends-feature-card {
+  display: grid;
+  gap: .4rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  color: var(--ink);
+  background: var(--surface-2);
+  text-decoration: none;
+  transition: transform .15s ease, border-color .15s ease;
+}
+.friends-feature-card:hover { transform: translateY(-1px); border-color: rgba(54,124,255,.55); }
+.friends-feature-card span { color: var(--muted); line-height: 1.45; }
+@media (max-width: 760px) {
+  .friends-feature-grid { grid-template-columns: 1fr; }
+  .friends-subnav { overflow-x: auto; flex-wrap: nowrap; }
+  .friends-subnav a { flex: 0 0 auto; }
+}
+
+/* Friends/mobile layout hardening */
+html,
+body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.app-shell,
+.workspace {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.friends-subnav,
+.friends-feature-grid,
+.friends-feature-card,
+.shared-meal-list,
+.shared-meal-summary,
+.shared-meal-category {
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 759px) {
+  /* Keep the Friends tabs inside the viewport. The tabs themselves can scroll,
+     but they must not make the whole page horizontally scrollable. */
+  .friends-subnav {
+    width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .friends-subnav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .friends-subnav a {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  /* Keep the bottom navigation attached to the viewport on every Friends page. */
+  .mobile-nav {
+    position: fixed !important;
+    top: auto !important;
+    right: max(0.65rem, env(safe-area-inset-right)) !important;
+    bottom: max(0.65rem, env(safe-area-inset-bottom)) !important;
+    left: max(0.65rem, env(safe-area-inset-left)) !important;
+    width: auto !important;
+    max-width: calc(100vw - 1.3rem - env(safe-area-inset-left) - env(safe-area-inset-right));
+    z-index: 100;
+  }
+
+  /* Prevent long friend names, meal names, or selectors from creating a
+     horizontal page overflow on narrow phones. */
+  .friends-feature-card,
+  .friend-card,
+  .shared-meal-summary,
+  .shared-meal-category summary,
+  .shared-meal-category-body,
+  .compact-field {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .compact-field select {
+    min-width: 0;
+    max-width: 100%;
+  }
+}
