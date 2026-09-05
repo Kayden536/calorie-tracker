@@ -325,7 +325,7 @@ const PulsePlateApp = (() => {
       <section class="mobile-menu-sheet" id="alphaSettingsMenu" hidden aria-label="MacroSync menu" aria-modal="true" role="dialog">
         <div class="mobile-menu-handle" data-mobile-menu-handle aria-hidden="true"><span></span></div>
         <div class="mobile-menu-sheet-header">
-          <div><p class="eyebrow">MacroSync</p><h2>Menu</h2></div>
+          <div class="mobile-menu-brand"><img class="menu-logo" src="assets/macrosync-favicon.png" alt=""><div><p class="eyebrow">MacroSync</p><h2>Menu</h2></div></div>
           <button class="modal-close" type="button" data-close-mobile-menu aria-label="Close menu">×</button>
         </div>
         <div class="mobile-menu-sheet-content" data-mobile-menu-content>
@@ -469,6 +469,8 @@ const PulsePlateApp = (() => {
     const theme = localStorage.getItem('macrosync-theme') || localStorage.getItem('pulseplate-theme') || 'dark';
     localStorage.setItem('macrosync-theme', theme);
     document.body.classList.toggle('light-theme', theme === 'light');
+    const logoSrc = theme === 'light' ? 'assets/macrosync-logo-light.png' : 'assets/macrosync-logo-dark.png';
+    $$('[data-theme-logo]').forEach(img => { img.src = logoSrc; });
     $$('[data-theme-toggle]').forEach(button => { button.textContent = theme === 'light' ? 'Dark mode' : 'Light mode'; });
   }
 

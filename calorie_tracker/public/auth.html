@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="icon" type="image/png" sizes="192x192" href="assets/macrosync-favicon.png"><link rel="apple-touch-icon" href="assets/macrosync-favicon.png">
   <title>MacroSync — Alpha</title>
   <script>
     (() => {
@@ -21,7 +21,8 @@
   </script>
   <main class="auth-shell">
     <section class="auth-card">
-      <div class="auth-logo"><span class="brand-mark">P</span><div><strong>MacroSync</strong><div class="page-copy">Nutrition planner · Alpha</div></div></div>
+      <div class="auth-logo"><img src="assets/macrosync-logo-dark.png" data-theme-logo alt="MacroSync"></div>
+      <script>if (document.body.classList.contains('light-theme')) document.querySelector('[data-theme-logo]').src = 'assets/macrosync-logo-light.png';</script></div></div>
       <h1>Welcome</h1>
       <p class="page-copy">Create an account to save your food diary and goals across devices.</p>
       <div class="auth-tabs"><button id="loginTab" class="active" type="button">Log in</button><button id="signupTab" type="button">Create account</button></div>

@@ -2081,3 +2081,56 @@ body {
 .agreement-row a { color:inherit; font-weight:800; text-decoration:underline; }
 .agreement-note { margin:0; color:var(--muted); font-size:.78rem; line-height:1.5; }
 .auth-card button:disabled { opacity:.5; cursor:not-allowed; }
+
+/* MacroSync branding */
+.brand {
+  display: block;
+  width: 100%;
+}
+
+.brand-logo {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  border-radius: 1rem;
+  background: transparent;
+}
+
+.auth-logo {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+}
+
+.auth-logo img {
+  display: block;
+  width: min(100%, 17rem);
+  height: auto;
+  border-radius: 1rem;
+  background: transparent;
+}
+
+.mobile-menu-brand {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  min-width: 0;
+}
+
+.menu-logo {
+  display: block;
+  width: 2.7rem;
+  height: 2.7rem;
+  flex: 0 0 2.7rem;
+  object-fit: cover;
+  border-radius: .75rem;
+  background: #fff;
+}
+
+@media (min-width: 1120px) {
+  .brand-logo {
+    max-height: 8rem;
+    object-fit: contain;
+  }
+}
