@@ -1841,8 +1841,9 @@ body.light-theme .food-source-tab.active{background:var(--accent,#6d55e8);border
   }
 }
 
-.calendar-mobile-header { display: none; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .7rem; }
+.calendar-mobile-header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .7rem; }
 .calendar-mobile-header h2 { margin: 0; text-align: center; font-size: 1rem; flex: 1; }
+.calendar-today-button { white-space: nowrap; padding: .5rem .75rem; }
 .calendar-day small { font-size: .65rem; color: var(--muted); }
 .calendar-day.logged::after { content: ""; width: .35rem; height: .35rem; border-radius: 999px; background: var(--red); }
 .calendar-day.not-logged::after { content: ""; width: .35rem; height: .35rem; border-radius: 999px; background: var(--line); }
@@ -1852,7 +1853,6 @@ body.light-theme .food-source-tab.active{background:var(--accent,#6d55e8);border
 .previous-day-card h3 { margin:.15rem 0; }
 .previous-day-card span { color:var(--muted); font-size:.85rem; }
 @media (max-width: 759px) {
-  .calendar-mobile-header { display: flex; }
   .calendar-desktop-arrow { display: none; }
   .calendar-strip { display: block; }
   .calendar-days { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: .25rem; }
