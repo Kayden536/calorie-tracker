@@ -14,13 +14,18 @@
           <section class="panel" data-recipe-builder>
             <div class="panel-header"><div><p class="eyebrow">Create reusable recipe</p><h2>New recipe</h2></div></div>
             <div class="form-grid"><div class="field"><label>Recipe name</label><input data-recipe-name placeholder="Chicken Alfredo"></div><div class="field"><label>Recipe servings</label><input data-recipe-servings type="number" min="1" step="1" value="1"></div></div>
-            <div class="field"><label>Find an ingredient</label><input data-recipe-food-search placeholder="Search chicken, pasta, sauce..."></div>
+            <div class="recipe-search-group">
+              <div class="field"><label>Search MacroSync Community Foods</label><input data-recipe-community-search placeholder="Search foods published by MacroSync users..."></div>
+              <div class="food-database-list" data-recipe-community-results></div>
+              <div class="field"><label>Search reference food databases</label><input data-recipe-reference-search placeholder="Search USDA, Canada CNF, UK CoFID, and Open Food Facts..."></div>
+              <div class="food-database-list" data-recipe-reference-results></div>
+            </div><label class="toggle-row"><input data-recipe-public type="checkbox"><span><strong>Share this recipe publicly</strong><small>Other MacroSync users will be able to find the complete recipe in the shared recipe search.</small></span></label>
             <div class="food-database-list" data-recipe-search-results></div>
             <h3>Ingredients</h3><div data-recipe-ingredients class="recipe-ingredient-list"></div>
             <div class="nutrition-summary" data-recipe-totals></div>
             <button class="primary-button" data-save-recipe type="button">Save Recipe</button>
           </section>
-          <section class="panel"><div class="panel-header"><div><p class="eyebrow">Your library</p><h2>My Recipes</h2></div></div><div class="recipe-list" data-recipe-list><p class="page-copy">Loading recipes…</p></div></section>
+          <section class="panel"><div class="panel-header"><div><p class="eyebrow">Your library</p><h2>My Recipes</h2></div></div><div class="recipe-list" data-recipe-list><p class="page-copy">Loading recipes…</p></div><div class="panel-divider"></div><div class="panel-header compact"><div><p class="eyebrow">Community</p><h2>Find Complete Recipes</h2></div></div><div class="field"><label>Search shared recipes</label><input data-public-recipe-search placeholder="Search complete recipes..."></div><div class="recipe-list" data-public-recipe-list><p class="page-copy">Loading shared recipes…</p></div></section>
         </section>
       </section>
       <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><button class="mobile-menu-button" type="button" data-mobile-menu aria-label="Open menu" aria-expanded="false"><span class="mobile-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span>Menu</span></button></nav>

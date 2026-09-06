@@ -51,6 +51,17 @@
             <button class="ghost-button" type="submit">Update password</button>
           </form>
           <p class="settings-status" data-settings-status role="status"></p>
+          <div class="settings-divider data-portability-panel">
+            <div class="panel-header"><div><p class="eyebrow">Data portability</p><h3>Import or export meal history</h3></div></div>
+            <p class="page-copy">Bring your nutrition history into MacroSync from a MyFitnessPal nutrition CSV, or download your MacroSync meal history as a CSV backup. Your files are processed in your browser and are not uploaded to a third-party import service.</p>
+            <div class="data-portability-actions">
+              <button class="primary-button" type="button" data-import-mfp>Import MyFitnessPal CSV</button>
+              <button class="ghost-button" type="button" data-export-meals>Export meal history CSV</button>
+            </div>
+            <input type="file" accept=".csv,text/csv" data-import-csv hidden />
+            <p class="settings-status" data-import-status role="status"></p>
+            <small class="page-copy">MyFitnessPal currently exports nutrition, progress, and exercise data as separate CSV files inside a ZIP. Choose the <strong>Your Nutrition</strong> CSV when importing meal history.</small>
+          </div>
         </section>
         <section class="panel settings-section" data-settings-section="privacy" hidden>
           <div class="panel-header"><div><p class="eyebrow">Privacy & data</p><h2>Privacy settings</h2><p class="page-copy">MacroSync only uses the information needed to operate your account and apply age-appropriate content rules.</p></div></div>

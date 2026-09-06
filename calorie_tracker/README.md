@@ -104,3 +104,22 @@ Run the complete `supabase-schema.sql` in Supabase after deploying this update.
 ## Terms, privacy, and age-based access
 
 See `POLICY-SETUP.md`. Existing Supabase databases should run `supabase-terms-privacy-minor-migration.sql`. New installations can use the updated `supabase-schema.sql`.
+
+## CSV meal history import/export
+
+MacroSync supports browser-based CSV data portability from **Settings → Privacy & data**.
+
+- **Import MyFitnessPal CSV** accepts the nutrition/meal CSV from a MyFitnessPal export. Current MyFitnessPal exports arrive as a ZIP containing separate nutrition, progress, and exercise CSV files; select the nutrition CSV when importing.
+- The importer recognizes common MyFitnessPal headers for date, meal, food, serving, calories, protein, carbohydrates, and fat.
+- Standard MyFitnessPal meal names such as Breakfast, Lunch, Dinner, and Snacks are mapped to the user's numbered MacroSync meals when possible. Additional meal names can be added up to MacroSync's 10-meal limit.
+- Exact duplicate food-log rows are skipped automatically when the same user/date/meal/food/serving/macros already exist.
+- Import is performed in the browser and inserts the resulting food entries through the user's normal Supabase permissions.
+- **Export meal history CSV** downloads all of the signed-in user's food-log rows in a MacroSync-compatible CSV format, including date, meal, food, serving, calories, protein, carbs, fat, FDC ID, and logged timestamp.
+
+
+## Food databases
+
+See `FOOD-DATABASES.md` for the multi-database search and cross-reference design.
+
+## Food databases
+See `FOOD-DATABASES.md` for USDA, Health Canada CNF, UK CoFID, Open Food Facts, and cross-reference setup. CNF is live through its public API; CoFID is prepared for a future API or local normalized CSV.

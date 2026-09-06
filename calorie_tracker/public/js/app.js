@@ -699,8 +699,9 @@ const PulsePlateApp = (() => {
     // from an older database or Supabase's function cache has not refreshed yet.
     let { data, error } = await supabase
       .from('meals')
-      .select('id,user_id,meal_number,name,created_at')
+      .select('id,user_id,meal_date,meal_number,name,created_at')
       .eq('user_id', user.id)
+      .eq('meal_date', dateKey(selectedDate))
       .order('meal_number', { ascending: true });
 
     if (error) throw error;
@@ -710,6 +711,7 @@ const PulsePlateApp = (() => {
     if (!data || data.length === 0) {
       const defaults = [1, 2, 3].map(n => ({
         user_id: user.id,
+        meal_date: dateKey(selectedDate),
         meal_number: n,
         name: `Meal ${n}`,
         sort_order: n
@@ -717,7 +719,7 @@ const PulsePlateApp = (() => {
       const { data: created, error: createError } = await supabase
         .from('meals')
         .insert(defaults)
-        .select('id,user_id,meal_number,name,sort_order,created_at');
+        .select('id,user_id,meal_date,meal_number,name,sort_order,created_at');
       if (createError) throw createError;
       data = created || [];
     }
@@ -755,7 +757,7 @@ const PulsePlateApp = (() => {
       const status = overlay.querySelector('[data-meal-status]');
       if (!name) { status.textContent = 'Enter a meal name.'; return; }
       status.textContent = 'Saving…';
-      const { error } = await supabase.rpc('rename_meal', { p_meal_id: meal.id, p_name: name });
+      const { error } = await supabase.rpc('rename_meal', { p_meal_id: meal.id, p_name: name, p_meal_date: dateKey(selectedDate) });
       if (error) { status.textContent = error.message; return; }
       overlay.remove();
       await refreshMealUI();
@@ -782,20 +784,39 @@ const PulsePlateApp = (() => {
       const status = overlay.querySelector('[data-meal-status]');
       if (!name) { status.textContent = 'Enter a meal name.'; return; }
       status.textContent = 'Adding…';
-      const { error } = await supabase.rpc('add_meal', { p_name: name });
+      const { error } = await supabase.rpc('add_meal', { p_name: name, p_meal_date: dateKey(selectedDate) });
       if (error) { status.textContent = error.message; return; }
       overlay.remove();
       await refreshMealUI();
     };
   }
 
+  async function deleteMeal(meal) {
+    if (userMeals.length <= 3) { alert('MacroSync requires at least 3 meals.'); return; }
+    const entries = await getEntries(selectedDate);
+    const hasEntries = entries.some(e => e.meal === meal.name);
+    if (hasEntries) {
+      alert(`${meal.name} still has foods logged today. Move or delete those foods before deleting the meal.`);
+      return;
+    }
+    if (!confirm(`Delete ${meal.name}? This cannot be undone.`)) return;
+    const { error } = await supabase.rpc('delete_meal', { p_meal_id: meal.id, p_meal_date: dateKey(selectedDate) });
+    if (error) { alert(error.message); return; }
+    await refreshMealUI();
+  }
+
   async function renderMealManager() {
     const box = $('[data-meal-manager]'); if (!box) return;
-    box.innerHTML = `<div class="meal-manager-list">${userMeals.map(meal => `<div class="meal-manager-row"><div><strong>${escapeHtml(meal.name)}</strong><small>Meal ${Number(meal.meal_number)}</small></div><button class="ghost-button" type="button" data-rename-meal="${meal.id}">Rename</button></div>`).join('')}</div>
-      <button class="primary-button meal-manager-add" type="button" data-add-meal ${userMeals.length >= 10 ? 'disabled' : ''}>+ Add meal${userMeals.length >= 10 ? ' (10 max)' : ''}</button>`;
+    box.innerHTML = `<div class="meal-manager-list">${userMeals.map(meal => `<div class="meal-manager-row"><div><strong>${escapeHtml(meal.name)}</strong><small>Meal ${Number(meal.meal_number)}</small></div><div class="meal-manager-actions"><button class="ghost-button" type="button" data-rename-meal="${meal.id}">Rename</button><button class="ghost-button danger-button" type="button" data-delete-meal="${meal.id}" ${userMeals.length <= 3 ? 'disabled' : ''}>Delete</button></div></div>`).join('')}</div>
+      <button class="primary-button meal-manager-add" type="button" data-add-meal ${userMeals.length >= 10 ? 'disabled' : ''}>+ Add meal${userMeals.length >= 10 ? ' (10 max)' : ''}</button>
+      <p class="page-copy">Meal choices are saved separately for each day. You can have 3 to 10 meals on this day without changing any other day. A meal with foods logged on this day must be emptied before it can be deleted.</p>`;
     box.querySelectorAll('[data-rename-meal]').forEach(button => button.onclick = () => {
       const meal = userMeals.find(m => String(m.id) === button.dataset.renameMeal);
       if (meal) openRenameMealModal(meal);
+    });
+    box.querySelectorAll('[data-delete-meal]').forEach(button => button.onclick = () => {
+      const meal = userMeals.find(m => String(m.id) === button.dataset.deleteMeal);
+      if (meal) deleteMeal(meal);
     });
     box.querySelector('[data-add-meal]')?.addEventListener('click', openAddMealModal);
   }
@@ -958,6 +979,7 @@ const PulsePlateApp = (() => {
     if (!search || !list) return;
 
     await renderPersonalFoods();
+    await renderMyCommunityFoods();
     await renderMealManager();
     let foodSource = 'usda';
     const sourceButtons = $$('[data-food-source]');
@@ -965,7 +987,17 @@ const PulsePlateApp = (() => {
     const setFoodSource = async source => {
       foodSource = source;
       sourceButtons.forEach(b => b.classList.toggle('active', b.dataset.foodSource === source));
-      if (sourceHint) sourceHint.textContent = source === 'usda' ? 'USDA FoodData Central results with nutrition verification.' : source === 'community' ? 'Foods published by MacroSync users. These are community-provided, not USDA verified.' : 'Foods you created privately for your own account.';
+      if (sourceHint) sourceHint.textContent = source === 'usda'
+        ? 'USDA FoodData Central results with nutrition verification.'
+        : source === 'cnf'
+          ? 'Health Canada Canadian Nutrient File results. This is a government reference source with detailed nutrient data.'
+          : source === 'cofid'
+            ? 'UK Composition of Foods Integrated Dataset (CoFID 2021), imported from the official workbook. Values are shown per 100 g and can be cross-referenced against USDA and Health Canada.'
+            : source === 'openfoodfacts'
+              ? 'Open Food Facts results. Values are community-contributed and can be cross-referenced against government reference databases.'
+              : source === 'community'
+            ? 'Foods published by MacroSync users. These are community-provided, not USDA verified.'
+            : 'Foods you created privately for your own account.';
       await runFoodSearch();
     };
     sourceButtons.forEach(b => b.addEventListener('click', () => setFoodSource(b.dataset.foodSource)));
@@ -973,22 +1005,34 @@ const PulsePlateApp = (() => {
       const q = search.value.trim();
       if (foodSource === 'personal') { await renderPersonalFoods(); return; }
       if (q.length < 2) {
-        list.innerHTML = `<p class="page-copy">${foodSource === 'usda' ? 'Type at least two characters to search USDA FoodData Central.' : 'Type at least two characters to search community foods.'}</p>`;
+        const label = foodSource === 'usda' ? 'USDA FoodData Central' : foodSource === 'cnf' ? 'Canadian Nutrient File' : foodSource === 'cofid' ? 'UK CoFID' : foodSource === 'openfoodfacts' ? 'Open Food Facts' : 'community foods';
+        list.innerHTML = `<p class="page-copy">Type at least two characters to search ${label}.</p>`;
         return;
       }
-      list.innerHTML = `<p class="page-copy">Searching ${foodSource === 'usda' ? 'USDA FoodData Central' : 'community foods'}…</p>`;
+      const searchLabel = foodSource === 'usda' ? 'USDA FoodData Central' : foodSource === 'cnf' ? 'Canadian Nutrient File' : foodSource === 'cofid' ? 'UK CoFID' : foodSource === 'openfoodfacts' ? 'Open Food Facts' : 'community foods';
+      list.innerHTML = `<p class="page-copy">Searching ${searchLabel}…</p>`;
       try {
         if (foodSource === 'community') {
           await renderCommunityFoods(q);
           return;
         }
-        const response = await fetch(`/api/foods/search?q=${encodeURIComponent(q)}`);
+        const endpoint = foodSource === 'openfoodfacts' ? '/api/foods/search-openfoodfacts' : foodSource === 'cnf' ? '/api/foods/search-cnf' : foodSource === 'cofid' ? '/api/foods/search-cofid' : '/api/foods/search';
+        const response = await fetch(`${endpoint}?q=${encodeURIComponent(q)}`);
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Food search failed.');
         const foods = Array.isArray(data.foods) ? data.foods : [];
         const rejectedNotice = Number(data.verification?.rejectedInvalidRecords || 0) > 0 ? `<p class="save-status">${Number(data.verification.rejectedInvalidRecords)} USDA result${Number(data.verification.rejectedInvalidRecords) === 1 ? '' : 's'} were hidden because their macro values failed basic physical consistency checks.</p>` : '';
-        list.innerHTML = foods.length ? `${rejectedNotice}<p class="food-search-count">Showing ${foods.length} result${foods.length === 1 ? '' : 's'}${data.totalHits ? ` of ${Number(data.totalHits).toLocaleString()}` : ''}.</p>${foods.map(foodCard).join('')}` : `${rejectedNotice}<p class="page-copy">No matching USDA foods found.</p>`;
-        $$('.food-db-card').forEach(card => card.addEventListener('click', () => { const food = foods.find(f => String(f.id) === card.dataset.id); if (food) openServingModal(food, 'usda'); }));
+        const noResults = foodSource === 'openfoodfacts' ? 'No matching Open Food Facts foods found.' : foodSource === 'cnf' ? 'No matching Canadian Nutrient File foods found.' : foodSource === 'cofid' ? (data.configured ? 'No matching CoFID foods found.' : 'UK CoFID is not configured. The included normalized dataset should be present in the server package.') : 'No matching USDA foods found.';
+        list.innerHTML = foods.length ? `${rejectedNotice}<p class="food-search-count">Showing ${foods.length} result${foods.length === 1 ? '' : 's'}${data.totalHits ? ` of ${Number(data.totalHits).toLocaleString()}` : ''}.</p>${foods.map(food => foodCard(food, foodSource)).join('')}` : `${rejectedNotice}<p class="page-copy">${noResults}</p>`;
+        list.querySelectorAll('[data-open-food]').forEach(card => card.addEventListener('click', (event) => {
+          if (event.target.closest('[data-compare-food]')) return;
+          const food = foods.find(f => String(f.id) === card.dataset.openFood);
+          if (food) openServingModal(food, foodSource);
+        }));
+        list.querySelectorAll('[data-compare-food]').forEach(button => button.addEventListener('click', async event => {
+          event.stopPropagation();
+          await openCrossReferenceModal(button.dataset.compareFoodName);
+        }));
       } catch (error) { console.error(error); list.innerHTML = `<p class="page-copy">${escapeHtml(error.message)}</p>`; }
     };
     search.oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(runFoodSearch, 350); };
@@ -998,20 +1042,51 @@ const PulsePlateApp = (() => {
     await renderSelectedDateEntries();
   }
 
-  function foodCard(food) {
+  function foodCard(food, source='usda') {
     const n = food.nutrients || {};
     const serving = food.servingSize ? `${moneyless(food.servingSize)}${food.servingUnit ? ` ${escapeHtml(food.servingUnit)}` : ''}` : '100 g';
-    const brand = food.brand ? escapeHtml(food.brand) : escapeHtml(food.dataType || 'USDA FoodData Central');
+    const brand = food.brand ? escapeHtml(food.brand) : escapeHtml(food.dataType || (source === 'openfoodfacts' ? 'Open Food Facts' : source === 'cnf' ? 'Canadian Nutrient File' : source === 'cofid' ? 'UK CoFID' : 'USDA FoodData Central'));
     const verification = food.nutritionVerification || {};
     const warning = Array.isArray(verification.warnings) && verification.warnings.length
-      ? `<small class="food-verification-warning">USDA nutrition data has a consistency warning</small>`
+      ? `<small class="food-verification-warning">Nutrition data has a consistency warning</small>`
       : `<small class="food-verification-ok">Nutrition values passed basic consistency checks</small>`;
-    return `<button type="button" class="food-db-card" data-id="${food.id}">
-      <strong>${escapeHtml(food.name)}</strong>
+    return `<article class="food-db-card food-db-result" data-open-food="${escapeHtml(String(food.id))}">
+      <div class="food-card-main"><strong>${escapeHtml(food.name)}</strong>
       <p>${brand} · ${serving}</p>
       <div class="macro-row"><span>${moneyless(n.calories)} cal</span><span>${moneyless(n.protein)}g protein</span><span>${moneyless(n.carbs)}g carbs</span><span>${moneyless(n.fat)}g fat</span></div>
-      ${warning}
-    </button>`;
+      ${warning}</div>
+      <div class="food-card-actions"><button type="button" class="ghost-button food-compare-button" data-compare-food data-compare-food-name="${escapeHtml(food.name)}">Compare sources</button><button type="button" class="primary-button food-select-button">Add</button></div>
+    </article>`;
+  }
+
+  async function openCrossReferenceModal(query) {
+    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<section class="modal-card cross-reference-modal" role="dialog" aria-modal="true" aria-labelledby="crossRefTitle"><button class="modal-close" data-close-cross type="button" aria-label="Close">×</button><p class="eyebrow">Nutrition cross-reference</p><h2 id="crossRefTitle">${escapeHtml(query)}</h2><p class="page-copy">MacroSync checks independent databases side by side. It does not average conflicting values or silently replace one source with another.</p><div data-cross-reference-body><p class="page-copy">Checking USDA, Health Canada, UK CoFID, and Open Food Facts…</p></div></section>`;
+    document.body.appendChild(overlay); overlay.querySelector('[data-close-cross]').onclick = () => overlay.remove();
+    try {
+      const response = await fetch(`/api/foods/cross-reference?q=${encodeURIComponent(query)}`);
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Cross-reference failed.');
+      const body = overlay.querySelector('[data-cross-reference-body]'); const sources = data.sources || {};
+      const labels = { usda:'USDA FoodData Central', cnf:'Health Canada Canadian Nutrient File', cofid:'UK CoFID', openfoodfacts:'Open Food Facts' };
+      const pct = value => `${Math.round(Number(value || 0) * 100)}%`;
+      const nutrientRows = food => {
+        if (!food) return '';
+        const n=food.nutrients||{}; const extra=food.extraNutrients||{};
+        const extras = Object.values(extra).slice(0,8).map(x => `<span>${escapeHtml(x.label)} ${moneyless(x.value)}</span>`).join('');
+        return `<div class="cross-extra-nutrients"><span>Fiber ${moneyless(n.fiber||0)}g</span><span>Sugars ${moneyless(n.sugar||0)}g</span><span>Sodium ${moneyless(n.sodium||0)}mg</span>${extras}</div>`;
+      };
+      const panel = (food, label) => food ? `<article class="cross-source-card"><p class="eyebrow">${label}</p><h3>${escapeHtml(food.name)}</h3><p>${escapeHtml(food.brand || food.dataType || label)}</p><div class="macro-row"><span>${moneyless(food.nutrients.calories)} cal</span><span>${moneyless(food.nutrients.protein)}g protein</span><span>${moneyless(food.nutrients.carbs)}g carbs</span><span>${moneyless(food.nutrients.fat)}g fat</span></div>${nutrientRows(food)}<small>${food.servingSize ? `Serving reference: ${moneyless(food.servingSize)} ${escapeHtml(food.servingUnit || 'g')}` : 'Values shown per 100 g'}</small></article>` : `<article class="cross-source-card"><p class="eyebrow">${label}</p><p class="page-copy">No matching result.</p></article>`;
+      const order=['usda','cnf','cofid','openfoodfacts'];
+      let html = `<div class="cross-source-grid cross-source-grid-wide">${order.map(k=>panel((sources[k]||[])[0],labels[k])).join('')}</div>`;
+      if (data.comparison?.comparisons?.length) {
+        html += `<div class="cross-reference-summary"><strong>Independent-source comparison</strong><p>Compared against ${escapeHtml(labels[data.comparison.baseSource] || data.comparison.baseSource)}. ${data.comparison.comparisons.map(c => `${escapeHtml(labels[c.source]||c.source)}: ${c.nutrition.status}, max nutrition difference ${pct(c.nutrition.maxDifference)}`).join(' · ')}</p><small>${escapeHtml(data.comparison.note || '')}</small></div>`;
+      } else {
+        html += '<p class="page-copy">MacroSync could not find enough configured sources with a candidate match. You can still choose any individual result shown above.</p>';
+      }
+      html += `<div class="cross-reference-lists cross-reference-lists-wide">${order.map(source => `<div><strong>${labels[source]}</strong>${(sources[source]||[]).slice(0,5).map(f=>`<button type="button" class="cross-candidate" data-cross-source="${source}" data-cross-id="${escapeHtml(String(f.id))}">${escapeHtml(f.name)} <span>${moneyless(f.nutrients.calories)} cal</span></button>`).join('') || '<small class="page-copy">No candidates.</small>'}</div>`).join('')}</div>`;
+      body.innerHTML = html;
+      body.querySelectorAll('.cross-candidate').forEach(button => button.onclick = () => { const source=button.dataset.crossSource; const food=(sources[source]||[]).find(f=>String(f.id)===button.dataset.crossId); if(food){overlay.remove();openServingModal(food,source);} });
+    } catch(error){ overlay.querySelector('[data-cross-reference-body]').innerHTML=`<p class="page-copy">${escapeHtml(error.message)}</p>`; }
   }
 
   function personalFoodCard(food) {
@@ -1031,7 +1106,7 @@ const PulsePlateApp = (() => {
       <div class="food-card-main"><strong>${escapeHtml(food.name)}</strong>
       <p>Community Food · ${escapeHtml(food.serving_options?.[0]?.amount || 1)} ${escapeHtml(food.serving_options?.[0]?.unit || 'serving')}</p>
       <p class="food-author">@${escapeHtml(author)} · ${escapeHtml(role)}</p>
-      <div class="macro-row"><span>${moneyless(food.calories_per_100g)} cal/100g</span><span>${moneyless(food.protein_per_100g)}g protein</span><span>${moneyless(food.carbs_per_100g)}g carbs</span><span>${moneyless(food.fat_per_100g)}g fat</span></div></div>
+      <div class="macro-row"><span>${moneyless(food.calories_per_100g)} cal</span><span>${moneyless(food.protein_per_100g)}g protein</span><span>${moneyless(food.carbs_per_100g)}g carbs</span><span>${moneyless(food.fat_per_100g)}g fat</span></div><small class="food-basis-note">Nutrition basis: per 100 g</small></div>
       ${mine ? `<button type="button" class="food-delete-button" data-delete-community-food="${food.id}" aria-label="Delete ${escapeHtml(food.name)}">Delete</button>` : ''}
     </div>`;
   }
@@ -1044,6 +1119,27 @@ const PulsePlateApp = (() => {
     return (data||[]).map(p=>p.id);
   }
 
+  async function renderMyCommunityFoods() {
+    const box = $('[data-my-community-food-list]');
+    if (!box) return;
+    const { data, error } = await supabase.from('community_foods').select('*').eq('user_id', user.id).order('created_at', { ascending: false });
+    if (error) { box.innerHTML = `<p class="page-copy">${escapeHtml(error.message)}</p>`; return; }
+    const foods = data || [];
+    if (foods.length) {
+      foods.forEach(f => { f.author_profile = null; });
+    }
+    box.innerHTML = foods.length ? foods.map(communityFoodCard).join('') : '<p class="page-copy">You have not published any Community Foods yet.</p>';
+    box.querySelectorAll('[data-community-food-id]').forEach(card => card.addEventListener('click', (e) => {
+      if (e.target.closest('[data-delete-community-food]')) return;
+      const food = foods.find(f => String(f.id) === card.dataset.communityFoodId);
+      if (food) openServingModal(food, 'community');
+    }));
+    box.querySelectorAll('[data-delete-community-food]').forEach(button => button.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await deleteCommunityFood(button.dataset.deleteCommunityFood);
+    }));
+  }
+
   async function renderCommunityFoods(query='') {
     const box=$('[data-community-food-list]') || $('[data-food-database-list]'); if(!box)return;
     const raw=query.trim();
@@ -1054,7 +1150,9 @@ const PulsePlateApp = (() => {
       if(!ids.length){box.innerHTML='<p class="page-copy">No users or personal trainers matched that @name.</p>';return;}
       request=request.in('user_id', ids);
     } else {
-      request=request.neq('user_id', user.id);
+      // Include the current user's own published foods in the normal Community search.
+      // The RLS policy already allows owners to read their own records, and hiding them
+      // here made a food disappear immediately after the user published it.
       if(raw) request=request.ilike('name', `%${raw.replace(/[%_]/g,'')}%`);
     }
     const {data,error}=await request;
@@ -1095,6 +1193,7 @@ const PulsePlateApp = (() => {
     const {error}=await supabase.from('user_foods').delete().eq('id',id).eq('user_id',user.id);
     if(error){alert(error.message);return;}
     await renderPersonalFoods();
+    await renderMyCommunityFoods();
     if(deleteCommunity && $('[data-food-source].active')?.dataset.foodSource==='community') {
       await renderCommunityFoods($('[data-food-search]')?.value || '');
     }
@@ -1117,27 +1216,78 @@ const PulsePlateApp = (() => {
     const {error}=await supabase.from('community_foods').delete().eq('id',id).eq('user_id',user.id);
     if(error){alert(error.message);return;}
     await renderCommunityFoods($('[data-food-search]')?.value || '');
+    await renderMyCommunityFoods();
+  }
+
+  function servingOptionRow(index, values = {}) {
+    const amount = values.amount ?? '';
+    const unit = values.unit ?? '';
+    const grams = values.grams ?? '';
+    const calories = values.calories ?? '';
+    const protein = values.protein ?? '';
+    const carbs = values.carbs ?? '';
+    const fat = values.fat ?? '';
+    return `<div class="serving-option-editor" data-serving-option-row="${index}">
+      <div class="serving-option-heading"><strong>Additional serving</strong><button type="button" class="ghost-button" data-remove-serving-option>Remove</button></div>
+      <div class="form-grid">
+        <div class="field"><label>Amount</label><input data-option-amount type="number" min="0.01" step="0.01" value="${escapeHtml(String(amount))}" placeholder="4"></div>
+        <div class="field"><label>Unit</label><input data-option-unit maxlength="40" value="${escapeHtml(String(unit))}" placeholder="oz, g, egg, cup"></div>
+        <div class="field"><label>Weight in grams <span class="field-hint">(needed for reference)</span></label><input data-option-grams type="number" min="0.01" step="0.01" value="${escapeHtml(String(grams))}" placeholder="113.4"></div>
+      </div>
+      <div class="serving-option-nutrition">
+        <p class="field-help">Optional: enter nutrition for this serving exactly as you know it. If left blank, MacroSync can estimate it from the default serving.</p>
+        <div class="form-grid">
+          <div class="field"><label>Calories</label><input data-option-cal type="number" min="0" step="0.1" value="${escapeHtml(String(calories))}"></div>
+          <div class="field"><label>Protein (g)</label><input data-option-protein type="number" min="0" step="0.1" value="${escapeHtml(String(protein))}"></div>
+          <div class="field"><label>Carbs (g)</label><input data-option-carbs type="number" min="0" step="0.1" value="${escapeHtml(String(carbs))}"></div>
+          <div class="field"><label>Fat (g)</label><input data-option-fat type="number" min="0" step="0.1" value="${escapeHtml(String(fat))}"></div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function collectServingOptions(overlay) {
+    return [...overlay.querySelectorAll('[data-serving-option-row]')].map(row => {
+      const amount=Number(row.querySelector('[data-option-amount]')?.value);
+      const unit=row.querySelector('[data-option-unit]')?.value.trim() || '';
+      const grams=Number(row.querySelector('[data-option-grams]')?.value);
+      const vals=['cal','protein','carbs','fat'].map(k => row.querySelector(`[data-option-${k}]`)?.value.trim() || '');
+      const nutritionProvided=vals.every(v => v !== '');
+      return {amount,unit,grams, nutritionProvided, ...(nutritionProvided ? {calories:Number(vals[0]),protein:Number(vals[1]),carbs:Number(vals[2]),fat:Number(vals[3])} : {})};
+    });
+  }
+
+  function attachServingOptionEditor(overlay) {
+    const list=overlay.querySelector('[data-serving-option-list]');
+    overlay.querySelector('[data-add-serving-option]')?.addEventListener('click',()=>{
+      const index=list.children.length;
+      list.insertAdjacentHTML('beforeend',servingOptionRow(index));
+      list.lastElementChild.querySelector('[data-remove-serving-option]').onclick=()=>list.lastElementChild.remove();
+    });
+    list?.querySelectorAll('[data-remove-serving-option]').forEach(b=>b.onclick=()=>b.closest('[data-serving-option-row]')?.remove());
+  }
+
+  function servingOptionHelpText() {
+    return `Add exact serving choices when you know them (for example, 4 oz, 100 g, 1 egg, or 1 cup). If you enter nutrition for an additional serving, MacroSync uses those values directly instead of converting them. If you do not provide an exact option, you can either keep the food limited to its default serving or allow estimated conversions.`;
   }
 
   function openCommunityFoodModal(){
     const overlay=document.createElement('div');overlay.className='modal-overlay';
-    overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Food databases</p><h2>Add a food</h2><p class="page-copy">Enter nutrition per 100 g and an optional easy serving. You can save the food to your personal database, publish it to the Community Foods database, or do both at the same time.</p><div class="form-grid"><div class="field"><label>Name</label><input data-c-name maxlength="120" placeholder="Egg"></div><div class="field"><label>Calories / 100 g</label><input data-c-cal type="number" min="0" step="0.1"></div><div class="field"><label>Protein / 100 g</label><input data-c-protein type="number" min="0" step="0.1"></div><div class="field"><label>Carbs / 100 g</label><input data-c-carbs type="number" min="0" step="0.1"></div><div class="field"><label>Fat / 100 g</label><input data-c-fat type="number" min="0" step="0.1"></div><div class="field"><label>Easy serving amount</label><input data-c-amount type="number" min="0.01" step="0.01" value="1"></div><div class="field"><label>Easy serving unit</label><input data-c-unit maxlength="40" value="serving" placeholder="egg, slice, cup"></div><div class="field"><label>Serving weight (g)</label><input data-c-grams type="number" min="0.01" step="0.01" value="100"></div></div><label class="toggle-row"><input data-c-personal type="checkbox" checked><span><strong>Save to My Foods</strong><small>Keep a private copy in your personal food database.</small></span></label><label class="toggle-row"><input data-c-publish type="checkbox" checked><span><strong>Publish to Community Foods</strong><small>Make the food searchable by other MacroSync users.</small></span></label><p class="save-status" data-c-status></p><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-c-save type="button">Save food</button></div></section>`;
-    document.body.appendChild(overlay);overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());
+    overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Food databases</p><h2>Add a food</h2><p class="page-copy">Set one default serving and its nutrition. Then add optional exact serving choices for people who prefer grams, ounces, cups, or individual units.</p><div class="form-grid"><div class="field"><label>Name</label><input data-c-name maxlength="120" placeholder="Egg"></div><div class="field"><label>Default serving amount</label><input data-c-amount type="number" min="0.01" step="0.01" value="1"></div><div class="field"><label>Default serving unit</label><input data-c-unit maxlength="40" value="serving" placeholder="egg, slice, cup"></div><div class="field"><label>Default serving weight (g)</label><input data-c-grams type="number" min="0.01" step="0.01" value="100"></div><div class="field"><label>Calories for default serving</label><input data-c-cal type="number" min="0" step="0.1"></div><div class="field"><label>Protein (g)</label><input data-c-protein type="number" min="0" step="0.1"></div><div class="field"><label>Carbs (g)</label><input data-c-carbs type="number" min="0" step="0.1"></div><div class="field"><label>Fat (g)</label><input data-c-fat type="number" min="0" step="0.1"></div></div><div class="serving-options-builder"><div class="serving-option-builder-header"><div><h3>Additional serving options</h3><p class="page-copy">${servingOptionHelpText()}</p></div><button type="button" class="ghost-button" data-add-serving-option>+ Add option</button></div><div data-serving-option-list></div></div><div class="field"><label>When an exact option is not provided</label><select data-c-conversion><option value="none">Do not offer gram/ounce/unit conversions</option><option value="estimate">Allow estimated conversions</option></select><p class="field-help">Estimated conversions are based on the serving weight and may not match the source exactly.</p></div><label class="toggle-row"><input data-c-personal type="checkbox" checked><span><strong>Save to My Foods</strong><small>Keep a private copy in your personal food database.</small></span></label><label class="toggle-row"><input data-c-publish type="checkbox" checked><span><strong>Publish to Community Foods</strong><small>Make the food searchable by other MacroSync users.</small></span></label><p class="save-status" data-c-status></p><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-c-save type="button">Save food</button></div></section>`;
+    document.body.appendChild(overlay);overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());attachServingOptionEditor(overlay);
     overlay.querySelector('[data-c-save]').onclick=async()=>{
       const status=overlay.querySelector('[data-c-status]');const name=overlay.querySelector('[data-c-name]').value.trim();const cal=Number(overlay.querySelector('[data-c-cal]').value),pro=Number(overlay.querySelector('[data-c-protein]').value),carb=Number(overlay.querySelector('[data-c-carbs]').value),fat=Number(overlay.querySelector('[data-c-fat]').value),amount=Number(overlay.querySelector('[data-c-amount]').value),grams=Number(overlay.querySelector('[data-c-grams]').value),unit=overlay.querySelector('[data-c-unit]').value.trim()||'serving';
-      const savePersonal=overlay.querySelector('[data-c-personal]').checked; const publishCommunity=overlay.querySelector('[data-c-publish]').checked;
-      const errorMsg=validateDisplayName(name); if(errorMsg){status.textContent=errorMsg;return;}
-      if(!savePersonal && !publishCommunity){status.textContent='Choose at least one database.';return;}
-      if([cal,pro,carb,fat,amount,grams].some(v=>!Number.isFinite(v)||v<0)||amount<=0||grams<=0){status.textContent='Enter valid non-negative nutrition values and a positive serving weight.';return;}
-      if(pro+carb+fat>100.5){status.textContent='The macros exceed 100 g per 100 g and cannot be saved.';return;}
+      const savePersonal=overlay.querySelector('[data-c-personal]').checked; const publishCommunity=overlay.querySelector('[data-c-publish]').checked; const conversionMode=overlay.querySelector('[data-c-conversion]').value; const options=collectServingOptions(overlay);
+      const errorMsg=validateDisplayName(name); if(errorMsg){status.textContent=errorMsg;return;} if(!savePersonal&&!publishCommunity){status.textContent='Choose at least one database.';return;}
+      if([cal,pro,carb,fat,amount,grams].some(v=>!Number.isFinite(v)||v<0)||amount<=0||grams<=0){status.textContent='Enter valid nutrition values and a positive default serving weight.';return;}
+      for(const o of options){if(!Number.isFinite(o.amount)||o.amount<=0||!o.unit||!Number.isFinite(o.grams)||o.grams<=0){status.textContent='Complete every additional serving option, including its gram weight.';return;}if(o.nutritionProvided&&[o.calories,o.protein,o.carbs,o.fat].some(v=>!Number.isFinite(v)||v<0)){status.textContent='Additional serving nutrition must use valid non-negative values.';return;}}
+      if(options.some(o=>o.nutritionProvided&&o.protein+o.carbs+o.fat>100.5)){status.textContent='One additional serving has macros above 100 g and cannot be saved.';return;}
+      if(pro+carb+fat>100.5){status.textContent='The default serving macros are too large to be valid.';return;}
       status.textContent='Saving…';
-      const {data,error}=await supabase.rpc('create_food_records', {p_name:name,p_calories_per_100g:cal,p_protein_per_100g:pro,p_carbs_per_100g:carb,p_fat_per_100g:fat,p_serving_amount:amount,p_serving_unit:unit,p_serving_grams:grams,p_save_personal:savePersonal,p_publish_community:publishCommunity,p_personal_source:'community'});
-      if(error){status.textContent=error.message;return;}
-      overlay.remove(); await renderPersonalFoods(); if (publishCommunity) await renderCommunityFoods();
-      if (data?.personal_food_id && savePersonal) {
-        const {data:personal}=await supabase.from('user_foods').select('*').eq('id',data.personal_food_id).single();
-        if(personal) openServingModal(personal,'personal');
-      }
+      const p100={p_calories_per_100g:cal*100/grams,p_protein_per_100g:pro*100/grams,p_carbs_per_100g:carb*100/grams,p_fat_per_100g:fat*100/grams};
+      const {data,error}=await supabase.rpc('create_food_records',{p_name:name,...p100,p_serving_amount:amount,p_serving_unit:unit,p_serving_grams:grams,p_serving_options:options,p_conversion_mode:conversionMode,p_save_personal:savePersonal,p_publish_community:publishCommunity,p_personal_source:'community',p_personal_calories:cal,p_personal_protein:pro,p_personal_carbs:carb,p_personal_fat:fat});
+      if(error){status.textContent=error.message;return;} overlay.remove();await renderPersonalFoods();if(publishCommunity){await renderCommunityFoods();await renderMyCommunityFoods();}
+      if(data?.personal_food_id&&savePersonal){const {data:personal}=await supabase.from('user_foods').select('*').eq('id',data.personal_food_id).single();if(personal)openServingModal(personal,'personal');}
     };
   }
 
@@ -1179,79 +1329,67 @@ const PulsePlateApp = (() => {
   }
 
   function openServingModal(food, source) {
-    const n = source === 'personal' ? { calories:Number(food.calories)||0, protein:Number(food.protein)||0, carbs:Number(food.carbs)||0, fat:Number(food.fat)||0 } : source === 'community' ? { calories:Number(food.calories_per_100g)||0, protein:Number(food.protein_per_100g)||0, carbs:Number(food.carbs_per_100g)||0, fat:Number(food.fat_per_100g)||0 } : (food.nutrients || {});
-    const communityServing = source === 'community' ? (Array.isArray(food.serving_options) && food.serving_options[0]) : null;
-    const baseGrams = source === 'personal' ? (food.serving_unit?.toLowerCase().includes('g') ? Number(food.serving_amount) : 100) : 100;
-    const usdaServingGrams = source === 'usda' && String(food.servingUnit || '').toLowerCase().includes('g') ? Number(food.servingSize) || 100 : 100;
-    const defaultAmount = source === 'community' ? Number(communityServing?.amount || 1) : source === 'personal' ? Number(food.serving_amount || 1) : Number(food.servingSize || 100);
-    const defaultUnit = source === 'community' ? (communityServing?.unit || 'serving') : source === 'personal' ? (food.serving_unit || 'serving') : (food.servingUnit || 'g');
-    const defaultServingGrams = source === 'community' ? Number(communityServing?.grams || 100) : usdaServingGrams;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<section class="modal-card serving-modal" role="dialog" aria-modal="true" aria-labelledby="servingTitle">
-      <button class="modal-close" type="button" data-close-modal aria-label="Close">×</button>
-      <p class="eyebrow">${source === 'personal' ? 'My Food' : 'USDA Food'}</p><h2 id="servingTitle">${escapeHtml(food.name)}</h2>
-      <div class="form-grid serving-controls">
-        <div class="field"><label for="servingAmount">Amount</label><input id="servingAmount" type="number" min="0.01" step="0.01" value="${defaultAmount}"></div>
-        <div class="field"><label for="servingUnit">Serving type</label><select id="servingUnit">${source==='community' ? `<option value="community">${escapeHtml(defaultUnit)}</option>` : `<option value="serving" ${defaultUnit.toLowerCase().includes('serv')?'selected':''}>serving${source==='usda' && food.householdServing ? ` (${escapeHtml(food.householdServing)})` : ''}</option>`}<option value="g" ${defaultUnit.toLowerCase().includes('g')?'selected':''}>grams</option><option value="oz">ounces</option></select></div>
-        <div class="field"><label for="servingMeal">Add to meal</label><select id="servingMeal">${mealOptionsMarkup(userMeals[0]?.name || "Meal 1")}</select></div>
-      </div>
-      <p class="serving-help">Nutrition updates automatically as you change the amount or serving type. USDA values are normalized to a 100 g basis before serving-size conversion.</p>
-      ${(source === 'usda' && food.nutritionVerification?.warnings?.length) ? `<p class="save-status">USDA reports a consistency warning for this food. The record passed the hard validation checks, but the calorie/macro values may differ because of rounding, fiber, or other USDA calculation methods.</p>` : ''}
-      <div class="nutrition-summary" data-serving-preview></div>
-      <div class="modal-actions"><button class="ghost-button" type="button" data-close-modal>Cancel</button><button class="primary-button" type="button" data-confirm-serving>Add to meal</button></div>
-    </section>`;
+    const n = source === 'personal'
+      ? { calories:Number(food.calories)||0, protein:Number(food.protein)||0, carbs:Number(food.carbs)||0, fat:Number(food.fat)||0 }
+      : source === 'community'
+        ? { calories:Number(food.calories_per_100g)||0, protein:Number(food.protein_per_100g)||0, carbs:Number(food.carbs_per_100g)||0, fat:Number(food.fat_per_100g)||0 }
+        : (food.nutrients || {});
+    const storedOptions = Array.isArray(food.serving_options) ? food.serving_options : [];
+    const defaultOption = source === 'community'
+      ? (storedOptions[0] || {amount:1,unit:'serving',grams:100})
+      : source === 'personal'
+        ? {amount:Number(food.serving_amount||1),unit:food.serving_unit||'serving',grams:Number(food.serving_grams||100),calories:Number(food.calories)||0,protein:Number(food.protein)||0,carbs:Number(food.carbs)||0,fat:Number(food.fat)||0}
+        : null;
+    const additionalOptions = source === 'community' ? storedOptions.slice(1) : source === 'personal' ? storedOptions : [];
+    const conversionMode = source === 'community' ? (food.conversion_mode || 'estimate') : source === 'personal' ? (food.conversion_mode || 'estimate') : 'estimate';
+    const externalServingGrams = source === 'usda' || source === 'openfoodfacts' ? Number(food.servingSize) || 100 : 100;
+    const hasDatabaseServing = ['usda','openfoodfacts','cnf','cofid'].includes(source);
+    const householdServing = String(food.householdServing || '').trim();
+    const defaultAmount = source === 'community' || source === 'personal'
+      ? Number(defaultOption.amount || 1)
+      : (hasDatabaseServing && externalServingGrams !== 100 && householdServing ? 1 : Number(food.servingSize || 100));
+    const defaultUnit = source === 'community' || source === 'personal'
+      ? (defaultOption.unit || 'serving')
+      : (hasDatabaseServing && externalServingGrams !== 100 && householdServing ? 'serving' : 'g');
+    const defaultServingLabel = source === 'community' || source === 'personal'
+      ? `${moneyless(defaultAmount)} ${escapeHtml(defaultUnit)}${defaultOption.grams ? ` (${moneyless(defaultOption.grams)} g)` : ''}`
+      : householdServing || `${moneyless(externalServingGrams)} g`;
+    const basisText = source === 'personal' || source === 'community'
+      ? `Creator's original nutrition basis: ${moneyless(defaultOption.amount||1)} ${escapeHtml(defaultOption.unit||'serving')}${defaultOption.grams ? ` (${moneyless(defaultOption.grams)} g)` : ''}`
+      : `Database nutrition facts: ${householdServing ? `per ${escapeHtml(householdServing)}` : `per ${moneyless(externalServingGrams)} g`}`;
+    const conversionWarning = conversionMode === 'none' && (source === 'personal' || source === 'community')
+      ? `Only the creator's saved serving choices are available. No estimated gram, ounce, cup, or unit conversions are offered for this food.`
+      : (source === 'personal' || source === 'community')
+        ? `Exact creator-provided serving options use the nutrition entered for that option. Other conversions are estimates and are not guaranteed to match the source exactly.`
+        : `If you switch away from the database's original measurement, MacroSync converts using the available serving-weight information. Converted values are estimates and are not guaranteed to match the source exactly.`;
+    const overlay=document.createElement('div');overlay.className='modal-overlay';
+    const optionMarkup=(o,i)=>`<option value="creator-${i}">${moneyless(o.amount)} ${escapeHtml(o.unit)}${o.grams ? ` (${moneyless(o.grams)} g)` : ''}</option>`;
+    const creatorOptions=[...(source==='community'?[defaultOption]:source==='personal'?[defaultOption]:[]),...additionalOptions];
+    overlay.innerHTML=`<section class="modal-card serving-modal" role="dialog" aria-modal="true" aria-labelledby="servingTitle"><button class="modal-close" type="button" data-close-modal aria-label="Close">×</button><p class="eyebrow">${source==='personal'?'My Food':source==='openfoodfacts'?'Open Food Facts':source==='cnf'?'Health Canada CNF':source==='cofid'?'UK CoFID':source==='community'?'Community Food':'USDA Food'}</p><h2 id="servingTitle">${escapeHtml(food.name)}</h2><div class="serving-reference"><strong>Default serving: ${defaultServingLabel}</strong><span>${basisText}</span></div><div class="form-grid serving-controls"><div class="field"><label for="servingAmount">Amount</label><input id="servingAmount" type="number" min="0.01" step="0.01" value="${defaultAmount}"></div><div class="field"><label for="servingUnit">Serving type</label><select id="servingUnit">${creatorOptions.length ? creatorOptions.map(optionMarkup).join('') : ''}${source!=='personal'&&source!=='community'||conversionMode!=='none' ? `<option value="g">grams</option><option value="oz">ounces</option>` : ''}</select></div><div class="field"><label for="servingMeal">Add to meal</label><select id="servingMeal">${mealOptionsMarkup(userMeals[0]?.name||'Meal 1')}</select></div></div><p class="serving-help">Choose a saved serving option whenever possible. Exact creator-provided options use their stored nutrition; estimated conversions are clearly marked.</p><p class="serving-conversion-warning">${conversionWarning}</p>${source==='usda'&&food.nutritionVerification?.warnings?.length?`<p class="save-status">USDA reports a consistency warning for this food. The record passed the hard validation checks, but the calorie/macro values may differ because of rounding, fiber, or other USDA calculation methods.</p>`:''}<div class="nutrition-summary" data-serving-preview></div><div class="modal-actions"><button class="ghost-button" type="button" data-close-modal>Cancel</button><button class="primary-button" type="button" data-confirm-serving>Add to meal</button></div></section>`;
     document.body.appendChild(overlay);
-    const amountInput = overlay.querySelector('#servingAmount');
-    const unitSelect = overlay.querySelector('#servingUnit');
-    const preview = overlay.querySelector('[data-serving-preview]');
-
-    function calculate() {
-      const amount = Math.max(0.01, Number(amountInput.value) || 1);
-      const unit = unitSelect.value;
-      let multiplier = amount;
-      let display = `${moneyless(amount)} ${unit}`;
-      if (unit === 'g') multiplier = amount / baseGrams;
-      else if (unit === 'oz') multiplier = (amount * 28.3495) / baseGrams;
-      else if (source === 'community') multiplier = (amount * defaultServingGrams) / 100;
-      else if (source === 'usda') multiplier = (amount * usdaServingGrams) / 100;
-      else multiplier = amount;
-      const values = { calories:Number(n.calories||0)*multiplier, protein:Number(n.protein||0)*multiplier, carbs:Number(n.carbs||0)*multiplier, fat:Number(n.fat||0)*multiplier };
-      preview.innerHTML = `<div><strong>${moneyless(values.calories)}</strong><span>Calories</span></div><div><strong>${moneyless(values.protein)}g</strong><span>Protein</span></div><div><strong>${moneyless(values.carbs)}g</strong><span>Carbs</span></div><div><strong>${moneyless(values.fat)}g</strong><span>Fat</span></div>`;
-      return { amount, unit, display, values };
+    const amountInput=overlay.querySelector('#servingAmount'),unitSelect=overlay.querySelector('#servingUnit'),preview=overlay.querySelector('[data-serving-preview]');
+    function calculate(){
+      const amount=Math.max(0.01,Number(amountInput.value)||1), unit=unitSelect.value; let values,display,exact=false;
+      if(unit.startsWith('creator-')){const o=creatorOptions[Number(unit.slice(8))];const baseAmount=Number(o.amount)||1;values={calories:Number(o.calories??(n.calories*(Number(o.grams||defaultOption.grams||100)/100))) * amount/baseAmount,protein:Number(o.protein??(n.protein*(Number(o.grams||defaultOption.grams||100)/100))) * amount/baseAmount,carbs:Number(o.carbs??(n.carbs*(Number(o.grams||defaultOption.grams||100)/100))) * amount/baseAmount,fat:Number(o.fat??(n.fat*(Number(o.grams||defaultOption.grams||100)/100))) * amount/baseAmount};display=`${moneyless(amount)} ${o.unit}`;exact=Boolean(o.nutritionProvided||o.calories!==undefined);}
+      else if(unit==='g'){if(source==='personal'){const multiplier=amount/Number(defaultOption.grams||100);values={calories:n.calories*multiplier,protein:n.protein*multiplier,carbs:n.carbs*multiplier,fat:n.fat*multiplier};}else{const multiplier=amount/100;values={calories:n.calories*multiplier,protein:n.protein*multiplier,carbs:n.carbs*multiplier,fat:n.fat*multiplier};}display=`${moneyless(amount)} g`;}
+      else {const multiplier=source==='personal' ? (amount*28.3495)/Number(defaultOption.grams||100) : (amount*28.3495)/100;values={calories:n.calories*multiplier,protein:n.protein*multiplier,carbs:n.carbs*multiplier,fat:n.fat*multiplier};display=`${moneyless(amount)} oz`;}
+      const label=exact?'Exact creator serving':'Estimated conversion';preview.innerHTML=`<div><strong>${moneyless(values.calories)}</strong><span>Calories</span></div><div><strong>${moneyless(values.protein)}g</strong><span>Protein</span></div><div><strong>${moneyless(values.carbs)}g</strong><span>Carbs</span></div><div><strong>${moneyless(values.fat)}g</strong><span>Fat</span></div><small class="serving-preview-note">${label}</small>`;return{amount,unit,display,values};
     }
-    amountInput.oninput = calculate; unitSelect.onchange = calculate; calculate();
-    overlay.querySelectorAll('[data-close-modal]').forEach(b => b.onclick = () => overlay.remove());
-    overlay.querySelector('[data-confirm-serving]').onclick = async () => {
-      const result = calculate();
-      const meal = overlay.querySelector('#servingMeal').value;
-      const payload = { user_id:user.id, logged_date:dateKey(selectedDate), meal, food_name:food.name, serving:result.display, fdc_id:source==='usda' ? Number(food.id) : (food.fdc_id ? Number(food.fdc_id) : null), calories:result.values.calories, protein:result.values.protein, carbs:result.values.carbs, fat:result.values.fat };
-      const { error } = await supabase.from('food_entries').insert(payload);
-      if (error) { alert(error.message); return; }
-      overlay.remove(); await renderSelectedDateEntries(); await renderPersonalFoods();
-    };
+    amountInput.oninput=calculate;unitSelect.onchange=calculate;calculate();overlay.querySelectorAll('[data-close-modal]').forEach(b=>b.onclick=()=>overlay.remove());overlay.querySelector('[data-confirm-serving]').onclick=async()=>{const result=calculate();const meal=overlay.querySelector('#servingMeal').value;const payload={user_id:user.id,logged_date:dateKey(selectedDate),meal,food_name:food.name,serving:result.display,fdc_id:source==='usda'?Number(food.id):(food.fdc_id?Number(food.fdc_id):null),calories:result.values.calories,protein:result.values.protein,carbs:result.values.carbs,fat:result.values.fat};const{error}=await supabase.from('food_entries').insert(payload);if(error){alert(error.message);return;}overlay.remove();await renderSelectedDateEntries();await renderPersonalFoods();};
   }
 
   function openManualFoodModal() {
-    const overlay = document.createElement('div'); overlay.className='modal-overlay';
-    overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" type="button" data-close-modal>×</button><p class="eyebrow">Food databases</p><h2>Create manual food</h2><p class="page-copy">Create a food using its nutrition per serving. You can keep it private, publish it to Community Foods, or save it to both databases at once.</p>
-      <div class="form-grid"><div class="field"><label>Name</label><input data-manual-name placeholder="Homemade burrito"></div><div class="field"><label>Serving amount</label><input data-manual-serving type="number" min="0.01" step="0.01" value="1"></div><div class="field"><label>Serving type</label><input data-manual-unit value="serving" placeholder="serving, g, cup..."></div><div class="field"><label>Serving weight (g)</label><input data-manual-grams type="number" min="0.01" step="0.01" value="100"></div><div class="field"><label>Calories</label><input data-manual-cal type="number" min="0" step="0.1"></div><div class="field"><label>Protein (g)</label><input data-manual-protein type="number" min="0" step="0.1"></div><div class="field"><label>Carbs (g)</label><input data-manual-carbs type="number" min="0" step="0.1"></div><div class="field"><label>Fat (g)</label><input data-manual-fat type="number" min="0" step="0.1"></div></div>
-      <label class="toggle-row"><input data-manual-community type="checkbox"><span><strong>Also publish to Community Foods</strong><small>The serving nutrition is converted to a per-100 g community record using the serving weight.</small></span></label>
-      <div class="modal-actions"><button class="ghost-button" data-close-modal type="button">Cancel</button><button class="primary-button" data-save-manual type="button">Save food & add to meal</button></div><p class="save-status" data-manual-status></p></section>`;
-    document.body.appendChild(overlay); overlay.querySelectorAll('[data-close-modal]').forEach(b=>b.onclick=()=>overlay.remove());
+    const overlay=document.createElement('div');overlay.className='modal-overlay';
+    overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" type="button" data-close-modal>×</button><p class="eyebrow">Food databases</p><h2>Create manual food</h2><p class="page-copy">Set the default serving and nutrition first. You can add exact alternative servings so users do not have to rely on conversions.</p><div class="form-grid"><div class="field"><label>Name</label><input data-manual-name placeholder="Homemade burrito"></div><div class="field"><label>Default serving amount</label><input data-manual-serving type="number" min="0.01" step="0.01" value="1"></div><div class="field"><label>Default serving unit</label><input data-manual-unit value="serving" placeholder="serving, egg, cup..."></div><div class="field"><label>Default serving weight (g)</label><input data-manual-grams type="number" min="0.01" step="0.01" value="100"></div><div class="field"><label>Calories for default serving</label><input data-manual-cal type="number" min="0" step="0.1"></div><div class="field"><label>Protein (g)</label><input data-manual-protein type="number" min="0" step="0.1"></div><div class="field"><label>Carbs (g)</label><input data-manual-carbs type="number" min="0" step="0.1"></div><div class="field"><label>Fat (g)</label><input data-manual-fat type="number" min="0" step="0.1"></div></div><div class="serving-options-builder"><div class="serving-option-builder-header"><div><h3>Additional serving options</h3><p class="page-copy">${servingOptionHelpText()}</p></div><button type="button" class="ghost-button" data-add-serving-option>+ Add option</button></div><div data-serving-option-list></div></div><div class="field"><label>When an exact option is not provided</label><select data-manual-conversion><option value="none">Do not offer gram/ounce/unit conversions</option><option value="estimate">Allow estimated conversions</option></select><p class="field-help">Estimated conversions use the stored serving weight and may not match the source exactly.</p></div><label class="toggle-row"><input data-manual-community type="checkbox"><span><strong>Also publish to Community Foods</strong><small>Publish the same serving choices for other MacroSync users.</small></span></label><div class="modal-actions"><button class="ghost-button" data-close-modal type="button">Cancel</button><button class="primary-button" data-save-manual type="button">Save food & add to meal</button></div><p class="save-status" data-manual-status></p></section>`;
+    document.body.appendChild(overlay);overlay.querySelectorAll('[data-close-modal]').forEach(b=>b.onclick=()=>overlay.remove());attachServingOptionEditor(overlay);
     overlay.querySelector('[data-save-manual]').onclick=async()=>{
-      const status=overlay.querySelector('[data-manual-status]'); const name=overlay.querySelector('[data-manual-name]').value.trim(); if(!name){status.textContent='Enter a food name.';return;}
-      const servingAmount=Number(overlay.querySelector('[data-manual-serving]').value), grams=Number(overlay.querySelector('[data-manual-grams]').value), calories=Number(overlay.querySelector('[data-manual-cal]').value)||0, protein=Number(overlay.querySelector('[data-manual-protein]').value)||0, carbs=Number(overlay.querySelector('[data-manual-carbs]').value)||0, fat=Number(overlay.querySelector('[data-manual-fat]').value)||0, unit=overlay.querySelector('[data-manual-unit]').value.trim()||'serving';
-      const publishCommunity=overlay.querySelector('[data-manual-community]').checked;
-      const errorMsg=validateDisplayName(name); if(errorMsg){status.textContent=errorMsg;return;}
-      if(!Number.isFinite(servingAmount)||servingAmount<=0||!Number.isFinite(grams)||grams<=0||[calories,protein,carbs,fat].some(v=>!Number.isFinite(v)||v<0)){status.textContent='Enter valid nutrition values and a positive serving weight.';return;}
-      if(protein+carbs+fat>100.5){status.textContent='The macros exceed 100 g per 100 g and cannot be saved.';return;}
-      status.textContent='Saving…';
-      const {data,error}=await supabase.rpc('create_food_records', {p_name:name,p_calories_per_100g:calories*100/grams,p_protein_per_100g:protein*100/grams,p_carbs_per_100g:carbs*100/grams,p_fat_per_100g:fat*100/grams,p_serving_amount:servingAmount,p_serving_unit:unit,p_serving_grams:grams,p_save_personal:true,p_publish_community:publishCommunity,p_personal_calories:calories,p_personal_protein:protein,p_personal_carbs:carbs,p_personal_fat:fat});
-      if(error){status.textContent=error.message;return;}
-      overlay.remove(); await renderPersonalFoods(); if(publishCommunity) await renderCommunityFoods();
-      const personalId=data?.personal_food_id;
-      if(personalId){const {data:personal}=await supabase.from('user_foods').select('*').eq('id',personalId).single(); if(personal) openServingModal(personal,'personal');}
+      const status=overlay.querySelector('[data-manual-status]');const name=overlay.querySelector('[data-manual-name]').value.trim();if(!name){status.textContent='Enter a food name.';return;}
+      const servingAmount=Number(overlay.querySelector('[data-manual-serving]').value),grams=Number(overlay.querySelector('[data-manual-grams]').value),calories=Number(overlay.querySelector('[data-manual-cal]').value)||0,protein=Number(overlay.querySelector('[data-manual-protein]').value)||0,carbs=Number(overlay.querySelector('[data-manual-carbs]').value)||0,fat=Number(overlay.querySelector('[data-manual-fat]').value)||0,unit=overlay.querySelector('[data-manual-unit]').value.trim()||'serving';const options=collectServingOptions(overlay);const conversionMode=overlay.querySelector('[data-manual-conversion]').value;const publishCommunity=overlay.querySelector('[data-manual-community]').checked;
+      const errorMsg=validateDisplayName(name);if(errorMsg){status.textContent=errorMsg;return;}if(!Number.isFinite(servingAmount)||servingAmount<=0||!Number.isFinite(grams)||grams<=0||[calories,protein,carbs,fat].some(v=>!Number.isFinite(v)||v<0)){status.textContent='Enter valid nutrition values and a positive default serving weight.';return;}
+      for(const o of options){if(!Number.isFinite(o.amount)||o.amount<=0||!o.unit||!Number.isFinite(o.grams)||o.grams<=0){status.textContent='Complete every additional serving option, including its gram weight.';return;}if(o.nutritionProvided&&[o.calories,o.protein,o.carbs,o.fat].some(v=>!Number.isFinite(v)||v<0)){status.textContent='Additional serving nutrition must use valid non-negative values.';return;}}
+      if(protein+carbs+fat>100.5){status.textContent='The default serving macros are too large to be valid.';return;}status.textContent='Saving…';
+      const {data,error}=await supabase.rpc('create_food_records',{p_name:name,p_calories_per_100g:calories*100/grams,p_protein_per_100g:protein*100/grams,p_carbs_per_100g:carbs*100/grams,p_fat_per_100g:fat*100/grams,p_serving_amount:servingAmount,p_serving_unit:unit,p_serving_grams:grams,p_serving_options:options,p_conversion_mode:conversionMode,p_save_personal:true,p_publish_community:publishCommunity,p_personal_calories:calories,p_personal_protein:protein,p_personal_carbs:carbs,p_personal_fat:fat});
+      if(error){status.textContent=error.message;return;}overlay.remove();await renderPersonalFoods();if(publishCommunity){await renderCommunityFoods();await renderMyCommunityFoods();}const personalId=data?.personal_food_id;if(personalId){const {data:personal}=await supabase.from('user_foods').select('*').eq('id',personalId).single();if(personal)openServingModal(personal,'personal');}
     };
   }
 
@@ -1279,12 +1417,286 @@ const PulsePlateApp = (() => {
 
   async function renderSelectedDateEntries(){ const list=$('[data-meal-list]'); if(!list)return; const entries=await getEntries(); await renderMeals(entries); }
 
+  function csvEscape(value) {
+    const text = String(value ?? '');
+    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  }
+
+  function downloadTextFile(filename, text, mime = 'text/csv;charset=utf-8') {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function parseCsv(text) {
+    const input = String(text || '').replace(/^\uFEFF/, '');
+    const rows = [];
+    let row = [];
+    let cell = '';
+    let quoted = false;
+    for (let i = 0; i < input.length; i++) {
+      const char = input[i];
+      if (quoted) {
+        if (char === '"') {
+          if (input[i + 1] === '"') { cell += '"'; i++; }
+          else quoted = false;
+        } else {
+          cell += char;
+        }
+      } else if (char === '"') {
+        quoted = true;
+      } else if (char === ',') {
+        row.push(cell); cell = '';
+      } else if (char === '\n') {
+        row.push(cell); rows.push(row); row = []; cell = '';
+      } else if (char === '\r') {
+        if (input[i + 1] !== '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+      } else {
+        cell += char;
+      }
+    }
+    if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+    return rows.filter(r => r.some(v => String(v).trim() !== ''));
+  }
+
+  function normalizeCsvHeader(value) {
+    return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+  }
+
+  function buildCsvHeaderMap(headers) {
+    const map = {};
+    headers.forEach((header, index) => {
+      const key = normalizeCsvHeader(header);
+      if (key && map[key] === undefined) map[key] = index;
+    });
+    return map;
+  }
+
+  function csvValue(row, map, aliases) {
+    for (const alias of aliases) {
+      const index = map[normalizeCsvHeader(alias)];
+      if (index !== undefined) return String(row[index] ?? '').trim();
+    }
+    return '';
+  }
+
+  function parseCsvNumber(value) {
+    const cleaned = String(value || '').replace(/,/g, '').replace(/[^0-9.+-]/g, '');
+    const number = Number(cleaned);
+    return Number.isFinite(number) ? number : 0;
+  }
+
+  function parseImportDate(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+    let match = raw.match(/^(\d{4})[-\/]([01]?\d)[-\/]([0-3]?\d)/);
+    if (match) {
+      const year = Number(match[1]), month = Number(match[2]), day = Number(match[3]);
+      const d = new Date(year, month - 1, day);
+      if (d.getFullYear() === year && d.getMonth() === month - 1 && d.getDate() === day) return dateKey(d);
+    }
+    match = raw.match(/^([01]?\d)[\/-]([0-3]?\d)[\/-](\d{4})$/);
+    if (match) {
+      const month = Number(match[1]), day = Number(match[2]), year = Number(match[3]);
+      const d = new Date(year, month - 1, day);
+      if (d.getFullYear() === year && d.getMonth() === month - 1 && d.getDate() === day) return dateKey(d);
+    }
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? null : dateKey(parsed);
+  }
+
+  function canonicalImportMealName(value) {
+    return String(value || '').trim().replace(/\s+/g, ' ');
+  }
+
+  async function buildImportMealMap(importedNames) {
+    await loadUserMeals();
+    const map = new Map();
+    const existingByName = new Map(userMeals.map(meal => [meal.name.trim().toLowerCase(), meal.name]));
+    const aliases = {
+      breakfast: 1,
+      lunch: 2,
+      dinner: 3,
+      snack: 4,
+      snacks: 4
+    };
+
+    for (const rawName of importedNames) {
+      const original = canonicalImportMealName(rawName) || 'Meal 1';
+      const key = original.toLowerCase();
+      if (existingByName.has(key)) {
+        map.set(original, existingByName.get(key));
+        continue;
+      }
+      const aliasNumber = aliases[key];
+      if (aliasNumber) {
+        const aliasMeal = userMeals.find(meal => Number(meal.meal_number) === aliasNumber);
+        if (aliasMeal) { map.set(original, aliasMeal.name); continue; }
+        if (userMeals.length < aliasNumber) {
+          const next = { user_id: user.id, meal_number: aliasNumber, name: original, sort_order: aliasNumber };
+          const { data, error } = await supabase.from('meals').insert(next).select('id,user_id,meal_number,name,sort_order,created_at').single();
+          if (!error && data) { userMeals.push(data); userMeals.sort((a,b)=>Number(a.meal_number)-Number(b.meal_number)); existingByName.set(key, data.name); map.set(original, data.name); continue; }
+        }
+      }
+      if (userMeals.length >= 10) continue;
+      const nextNumber = Math.max(0, ...userMeals.map(meal => Number(meal.meal_number))) + 1;
+      const next = { user_id: user.id, meal_number: nextNumber, name: original.slice(0, 40), sort_order: nextNumber };
+      const { data, error } = await supabase.from('meals').insert(next).select('id,user_id,meal_number,name,sort_order,created_at').single();
+      if (error || !data) continue;
+      userMeals.push(data);
+      userMeals.sort((a,b)=>Number(a.meal_number)-Number(b.meal_number));
+      existingByName.set(key, data.name);
+      map.set(original, data.name);
+    }
+    return map;
+  }
+
+  function normalizeImportRow(row, map) {
+    const date = parseImportDate(csvValue(row, map, ['Date', 'Logged Date', 'Log Date']));
+    const meal = canonicalImportMealName(csvValue(row, map, ['Meal', 'Meal Name', 'Meal Type']));
+    const food = csvValue(row, map, ['Food', 'Food Name', 'Name', 'Description']);
+    const serving = csvValue(row, map, ['Serving', 'Serving Size', 'Quantity', 'Amount']) || '1 serving';
+    if (!date || !food || /^(total|totals|daily total|exercise|food diary)$/i.test(food.trim())) return null;
+    return {
+      logged_date: date,
+      imported_meal: meal || 'Meal 1',
+      food_name: food.slice(0, 300),
+      serving: serving.slice(0, 120),
+      calories: Math.max(0, parseCsvNumber(csvValue(row, map, ['Calories', 'Energy']))),
+      protein: Math.max(0, parseCsvNumber(csvValue(row, map, ['Protein', 'Protein (g)']))),
+      carbs: Math.max(0, parseCsvNumber(csvValue(row, map, ['Carbohydrates', 'Carbs', 'Carbohydrate', 'Carbs (g)']))),
+      fat: Math.max(0, parseCsvNumber(csvValue(row, map, ['Fat', 'Fat (g)', 'Total Fat']))),
+      fdc_id: null
+    };
+  }
+
+  function importRowKey(row) {
+    return [row.logged_date, row.meal, row.food_name, row.serving, row.calories, row.protein, row.carbs, row.fat].map(v => String(v ?? '').trim().toLowerCase()).join('|');
+  }
+
+  async function importMealCsv(file) {
+    const status = $('[data-import-status]');
+    if (!file) return;
+    status.textContent = 'Reading CSV…';
+    try {
+      const text = await file.text();
+      const rows = parseCsv(text);
+      if (rows.length < 2) throw new Error('The CSV does not contain any data rows.');
+      const header = rows[0];
+      const map = buildCsvHeaderMap(header);
+      const hasFood = ['Food', 'Food Name', 'Name', 'Description'].some(key => map[normalizeCsvHeader(key)] !== undefined);
+      const hasDate = ['Date', 'Logged Date', 'Log Date'].some(key => map[normalizeCsvHeader(key)] !== undefined);
+      const hasCalories = ['Calories', 'Energy'].some(key => map[normalizeCsvHeader(key)] !== undefined);
+      if (!hasFood || !hasDate || !hasCalories) throw new Error('This does not look like a nutrition CSV. Choose the MyFitnessPal “Your Nutrition” CSV or a MacroSync meal-history CSV.');
+
+      const parsed = [];
+      let skipped = 0;
+      for (let i = 1; i < rows.length; i++) {
+        const item = normalizeImportRow(rows[i], map);
+        if (item) parsed.push(item); else skipped++;
+      }
+      if (!parsed.length) throw new Error('No importable food rows were found in the CSV.');
+      if (parsed.length > 20000) throw new Error('This CSV contains more than 20,000 food rows. Split the export into smaller date ranges and import them separately.');
+
+      const mealNames = [...new Set(parsed.map(item => item.imported_meal))];
+      const mealMap = await buildImportMealMap(mealNames);
+      const prepared = parsed.map(item => ({
+        user_id: user.id,
+        logged_date: item.logged_date,
+        meal: mealMap.get(item.imported_meal) || null,
+        food_name: item.food_name,
+        serving: item.serving,
+        fdc_id: item.fdc_id,
+        calories: item.calories,
+        protein: item.protein,
+        carbs: item.carbs,
+        fat: item.fat
+      })).filter(item => item.meal);
+      if (!prepared.length) throw new Error('None of the imported meal names could be mapped to your available meals.');
+
+      const skipDuplicates = true;
+      let existingKeys = new Set();
+      if (skipDuplicates) {
+        const dates = prepared.map(r => r.logged_date).sort();
+        const { data: existing, error: existingError } = await supabase.from('food_entries').select('logged_date,meal,food_name,serving,calories,protein,carbs,fat').eq('user_id', user.id).gte('logged_date', dates[0]).lte('logged_date', dates[dates.length - 1]);
+        if (existingError) throw existingError;
+        existingKeys = new Set((existing || []).map(importRowKey));
+      }
+      const uniquePrepared = prepared.filter(row => !existingKeys.has(importRowKey(row)));
+      if (!uniquePrepared.length) {
+        status.textContent = `Nothing imported. All ${prepared.length.toLocaleString()} rows already exist.`;
+        return;
+      }
+
+      status.textContent = `Importing ${uniquePrepared.length.toLocaleString()} food rows…`;
+      let imported = 0;
+      for (let i = 0; i < uniquePrepared.length; i += 500) {
+        const chunk = uniquePrepared.slice(i, i + 500);
+        const { error } = await supabase.from('food_entries').insert(chunk);
+        if (error) throw error;
+        imported += chunk.length;
+        status.textContent = `Imported ${imported.toLocaleString()} of ${uniquePrepared.length.toLocaleString()} rows…`;
+      }
+      await loadUserMeals();
+      status.textContent = `Imported ${imported.toLocaleString()} food rows. ${skipped ? `${skipped.toLocaleString()} rows were skipped because they were not food entries. ` : ''}Exact duplicates were skipped.`;
+      await renderPage();
+    } catch (error) {
+      console.error(error);
+      status.textContent = error?.message || 'The CSV could not be imported.';
+    }
+  }
+
+  async function exportMealHistoryCsv() {
+    const status = $('[data-import-status]');
+    status.textContent = 'Preparing your meal history…';
+    try {
+      const { data, error } = await supabase.from('food_entries').select('logged_date,meal,food_name,serving,calories,protein,carbs,fat,fdc_id,created_at').eq('user_id', user.id).order('logged_date', { ascending: true }).order('created_at', { ascending: true });
+      if (error) throw error;
+      const headers = ['Date','Meal','Food','Serving','Calories','Protein','Carbs','Fat','FDC ID','Logged At'];
+      const lines = [headers.map(csvEscape).join(',')];
+      for (const row of (data || [])) {
+        lines.push([
+          row.logged_date,
+          row.meal,
+          row.food_name,
+          row.serving,
+          row.calories,
+          row.protein,
+          row.carbs,
+          row.fat,
+          row.fdc_id ?? '',
+          row.created_at ?? ''
+        ].map(csvEscape).join(','));
+      }
+      const stamp = dateKey(new Date());
+      downloadTextFile(`macrosync-meal-history-${stamp}.csv`, lines.join('\r\n'));
+      status.textContent = `Exported ${(data || []).length.toLocaleString()} food rows.`;
+    } catch (error) {
+      console.error(error);
+      status.textContent = error?.message || 'The meal history could not be exported.';
+    }
+  }
+
   async function renderSettings(){
     const nameInput = $('#settingsDisplayName');
     const emailInput = $('#settingsEmail');
     const roleText = $('#settingsRole');
     const status = $('[data-settings-status]');
     const feedbackStatus = $('[data-feedback-status]');
+    const importInput = $('[data-import-csv]');
+    $('[data-import-mfp]')?.addEventListener('click', () => importInput?.click());
+    importInput?.addEventListener('change', async () => {
+      const file = importInput.files?.[0];
+      if (file) await importMealCsv(file);
+      importInput.value = '';
+    });
+    $('[data-export-meals]')?.addEventListener('click', exportMealHistoryCsv);
     const { data: profile, error } = await supabase.from('profiles').select('display_name,email,role,business_name,is_admin').eq('id', user.id).single();
     if (error) { if (status) status.textContent = error.message; return; }
     if (nameInput) nameInput.value = profile?.display_name || user.user_metadata?.display_name || '';
@@ -1546,19 +1958,94 @@ const PulsePlateApp = (() => {
     const builder = $('[data-recipe-builder]');
     if (!list || !builder) return;
     await loadRecipes(list);
-    const search = builder.querySelector('[data-recipe-food-search]');
-    const results = builder.querySelector('[data-recipe-search-results]');
+    const communitySearch = builder.querySelector('[data-recipe-community-search]');
+    const communityResults = builder.querySelector('[data-recipe-community-results]');
+    const referenceSearch = builder.querySelector('[data-recipe-reference-search]');
+    const referenceResults = builder.querySelector('[data-recipe-reference-results]');
     const ingredientList = builder.querySelector('[data-recipe-ingredients]');
     let ingredients = [];
+
     const drawIngredients = () => {
-      ingredientList.innerHTML = ingredients.length ? ingredients.map((item,index)=>`<div class="recipe-ingredient-row"><div><strong>${escapeHtml(item.name)}</strong><small>${moneyless(item.amount)} ${escapeHtml(item.unit)}</small></div><span>${moneyless(item.calories)} cal</span><button type="button" class="text-button" data-remove-ingredient="${index}">Remove</button></div>`).join('') : '<p class="page-copy">Add ingredients to build your recipe.</p>';
+      ingredientList.innerHTML = ingredients.length
+        ? ingredients.map((item,index)=>`<div class="recipe-ingredient-row"><div><strong>${escapeHtml(item.name)}</strong><small>${moneyless(item.amount)} ${escapeHtml(item.unit)} · ${escapeHtml(item.sourceLabel || 'Food database')}</small></div><span>${moneyless(item.calories)} cal</span><button type="button" class="text-button" data-remove-ingredient="${index}">Remove</button></div>`).join('')
+        : '<p class="page-copy">Add ingredients to build your recipe.</p>';
       ingredientList.querySelectorAll('[data-remove-ingredient]').forEach(b=>b.onclick=()=>{ingredients.splice(Number(b.dataset.removeIngredient),1);drawIngredients();});
       const totals=ingredients.reduce((a,i)=>({calories:a.calories+i.calories,protein:a.protein+i.protein,carbs:a.carbs+i.carbs,fat:a.fat+i.fat}),{calories:0,protein:0,carbs:0,fat:0});
       builder.querySelector('[data-recipe-totals]').innerHTML=`<div><strong>${moneyless(totals.calories)}</strong><span>Calories</span></div><div><strong>${moneyless(totals.protein)}g</strong><span>Protein</span></div><div><strong>${moneyless(totals.carbs)}g</strong><span>Carbs</span></div><div><strong>${moneyless(totals.fat)}g</strong><span>Fat</span></div>`;
     };
+
+    const addFoodToRecipe = (food, sourceLabel) => {
+      const n=food.nutrients||{};
+      const amount=Number(food.servingSize||100);
+      const unit=food.servingUnit||'g';
+      const defaultText = food.householdServing || `${moneyless(amount)} ${unit}`;
+      const raw=prompt(`How many ${unit} of ${food.name}?\nDefault serving: ${defaultText}`, amount);
+      const qty=Number(raw);
+      if(!Number.isFinite(qty)||qty<=0)return;
+      const factor=String(unit).toLowerCase().includes('g') ? qty/100 : qty*amount/100;
+      ingredients.push({name:food.name,amount:qty,unit,fdc_id:/^\d+$/.test(String(food.id))?Number(food.id):null,calories:Number(n.calories||0)*factor,protein:Number(n.protein||0)*factor,carbs:Number(n.carbs||0)*factor,fat:Number(n.fat||0)*factor,sourceLabel});
+      drawIngredients();
+    };
+
+    const renderFoodResults = (box, foods, emptyText='No foods found.') => {
+      box.innerHTML = foods.length
+        ? foods.slice(0,12).map((f,i)=>`<button type="button" class="food-db-card" data-recipe-result-index="${i}"><strong>${escapeHtml(f.name)}</strong><p>${escapeHtml(f.brand||f.dataType||f.source||'Food database')}</p>${f.householdServing?`<small>${escapeHtml(f.householdServing)}</small>`:''}</button>`).join('')
+        : `<p class="page-copy">${emptyText}</p>`;
+      box.querySelectorAll('[data-recipe-result-index]').forEach(b=>b.onclick=()=>addFoodToRecipe(foods[Number(b.dataset.recipeResultIndex)], foods[Number(b.dataset.recipeResultIndex)]?.sourceLabel || foods[Number(b.dataset.recipeResultIndex)]?.dataType || 'Food database'));
+    };
+
     drawIngredients();
-    search?.addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(async()=>{const q=search.value.trim();if(q.length<2){results.innerHTML='';return;}results.innerHTML='<p class="page-copy">Searching…</p>';try{const r=await fetch(`/api/foods/search?q=${encodeURIComponent(q)}`);const d=await r.json();if(!r.ok)throw new Error(d.error||'Search failed');results.innerHTML=(d.foods||[]).slice(0,8).map(f=>`<button type="button" class="food-db-card" data-recipe-food-id="${f.id}"><strong>${escapeHtml(f.name)}</strong><p>${escapeHtml(f.brand||f.dataType||'USDA')}</p></button>`).join('')||'<p class="page-copy">No foods found.</p>';results.querySelectorAll('[data-recipe-food-id]').forEach(b=>b.onclick=()=>{const f=(d.foods||[]).find(x=>String(x.id)===b.dataset.recipeFoodId);if(!f)return;const n=f.nutrients||{};const amount=Number(f.servingSize||100);const unit=f.servingUnit||'g';const qty=Number(prompt(`How many ${unit} of ${f.name}?`,amount));if(!qty||qty<=0)return;const factor=String(unit).toLowerCase().includes('g') ? qty/100 : qty*amount/100;ingredients.push({name:f.name,amount:qty,unit,fdc_id:f.id,calories:Number(n.calories||0)*factor,protein:Number(n.protein||0)*factor,carbs:Number(n.carbs||0)*factor,fat:Number(n.fat||0)*factor});drawIngredients();});}catch(e){results.innerHTML=`<p class="page-copy">${escapeHtml(e.message)}</p>`}},350)});
-    builder.querySelector('[data-save-recipe]')?.addEventListener('click',async()=>{const name=builder.querySelector('[data-recipe-name]').value.trim();const servings=Math.max(1,Number(builder.querySelector('[data-recipe-servings]').value)||1);if(!name||!ingredients.length){alert('Enter a recipe name and add at least one ingredient.');return;}const {data:recipe,error}=await supabase.from('recipes').insert({user_id:user.id,name,servings}).select('*').single();if(error){alert(error.message);return;}const rows=ingredients.map(i=>({recipe_id:recipe.id,user_id:user.id,food_name:i.name,serving:`${moneyless(i.amount)} ${i.unit}`,fdc_id:i.fdc_id,calories:i.calories,protein:i.protein,carbs:i.carbs,fat:i.fat}));const {error:itemError}=await supabase.from('recipe_items').insert(rows);if(itemError){alert(itemError.message);return;}ingredients=[];builder.querySelector('[data-recipe-name]').value='';drawIngredients();await loadRecipes(list);alert(`${name} was saved.`);});
+
+    let communityTimer;
+    communitySearch?.addEventListener('input',()=>{
+      clearTimeout(communityTimer);
+      communityTimer=setTimeout(async()=>{
+        const q=communitySearch.value.trim();
+        if(q.length<2){communityResults.innerHTML='';return;}
+        communityResults.innerHTML='<p class="page-copy">Searching Community Foods…</p>';
+        const {data,error}=await supabase.from('community_foods').select('*').eq('is_public',true).ilike('name',`%${q}%`).order('name').limit(20);
+        if(error){communityResults.innerHTML=`<p class="page-copy">${escapeHtml(error.message)}</p>`;return;}
+        const foods=(data||[]).map(f=>({id:`community-${f.id}`,name:f.name,brand:'MacroSync Community Foods',dataType:'Community Food',servingSize:Number(f.serving_options?.[0]?.amount||f.serving_grams||100),servingUnit:f.serving_options?.[0]?.unit||'g',householdServing:f.serving_options?.[0]?.amount?`${f.serving_options[0].amount} ${f.serving_options[0].unit||''}`:'',nutrients:{calories:Number(f.calories_per_100g||0),protein:Number(f.protein_per_100g||0),carbs:Number(f.carbs_per_100g||0),fat:Number(f.fat_per_100g||0)},source:'community'}));
+        foods.forEach(f=>f.sourceLabel='Community Food'); renderFoodResults(communityResults,foods,'No published Community Foods found.');
+      },300);
+    });
+
+    let referenceTimer;
+    referenceSearch?.addEventListener('input',()=>{
+      clearTimeout(referenceTimer);
+      referenceTimer=setTimeout(async()=>{
+        const q=referenceSearch.value.trim();
+        if(q.length<2){referenceResults.innerHTML='';return;}
+        referenceResults.innerHTML='<p class="page-copy">Searching USDA, Canada CNF, UK CoFID, and Open Food Facts…</p>';
+        try {
+          const endpoints=[
+            ['/api/foods/search', 'USDA FoodData Central'],
+            ['/api/foods/search-cnf', 'Canadian Nutrient File'],
+            ['/api/foods/search-cofid', 'UK CoFID (2021)'],
+            ['/api/foods/search-openfoodfacts', 'Open Food Facts']
+          ];
+          const settled=await Promise.all(endpoints.map(async([url,label])=>{
+            try { const r=await fetch(`${url}?q=${encodeURIComponent(q)}`); const d=await r.json(); if(!r.ok) throw new Error(d.error||'Search failed'); return (d.foods||[]).map(f=>({...f,sourceLabel:label})); }
+            catch { return []; }
+          }));
+          const foods=settled.flat().slice(0,24);
+          renderFoodResults(referenceResults,foods,'No matching foods were found in the reference databases.');
+        } catch(e) { referenceResults.innerHTML=`<p class="page-copy">${escapeHtml(e.message)}</p>`; }
+      },350);
+    });
+
+    builder.querySelector('[data-save-recipe]')?.addEventListener('click',async()=>{
+      const name=builder.querySelector('[data-recipe-name]').value.trim();
+      const servings=Math.max(1,Number(builder.querySelector('[data-recipe-servings]').value)||1);
+      const isPublic=Boolean(builder.querySelector('[data-recipe-public]')?.checked);
+      if(!name||!ingredients.length){alert('Enter a recipe name and add at least one ingredient.');return;}
+      const {data:recipe,error}=await supabase.from('recipes').insert({user_id:user.id,name,servings,is_public:isPublic}).select('*').single();
+      if(error){alert(error.message);return;}
+      const rows=ingredients.map(i=>({recipe_id:recipe.id,user_id:user.id,food_name:i.name,serving:`${moneyless(i.amount)} ${i.unit}`,fdc_id:i.fdc_id,calories:i.calories,protein:i.protein,carbs:i.carbs,fat:i.fat}));
+      const {error:itemError}=await supabase.from('recipe_items').insert(rows);
+      if(itemError){alert(itemError.message);return;}
+      ingredients=[];builder.querySelector('[data-recipe-name]').value='';drawIngredients();await loadRecipes(list);alert(`${name} was saved.`);
+    });
   }
 
   async function loadRecipes(list){
