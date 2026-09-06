@@ -331,6 +331,7 @@ const PulsePlateApp = (() => {
         <div class="mobile-menu-sheet-content" data-mobile-menu-content>
           <a href="index.html">Dashboard</a>
           <a href="settings.html">Settings</a>
+          <a href="trainers.html">Find a Trainer</a>
           <a href="recipes.html">Recipes</a>
           <a href="goals.html">Goals</a>
           <a href="admin.html" data-admin-only hidden>Admin Moderation</a>
@@ -347,7 +348,7 @@ const PulsePlateApp = (() => {
     $$('[data-admin-only]').forEach(el => { el.hidden = !isAdmin; });
     const limitedMinor = isLimitedMinorProfile(profile);
     if (limitedMinor) {
-      $$('a[href="social.html"], a[href="friends-add.html"], a[href="friends-messages.html"], a[href="friends-meals.html"], a[href="goals.html"], a[href="progress.html"], a[href="recipes.html"], a[href="account.html"], a[href="settings.html"]').forEach(el => { el.hidden = true; });
+      $$('a[href="social.html"], a[href="friends-add.html"], a[href="friends-messages.html"], a[href="friends-meals.html"], a[href="trainers.html"], a[href="goals.html"], a[href="progress.html"], a[href="recipes.html"], a[href="account.html"], a[href="settings.html"]').forEach(el => { el.hidden = true; });
       $$('[data-mobile-nav] a').forEach(el => { if (!['log_food.html','log.html'].includes(el.getAttribute('href'))) el.hidden = true; });
       $$('[data-mobile-menu] a').forEach(el => { if (!['log_food.html','log.html'].includes(el.getAttribute('href'))) el.hidden = true; });
     }
@@ -625,6 +626,7 @@ const PulsePlateApp = (() => {
     if (page === 'progress') await renderProgress();
     if (page === 'recipes') await renderRecipes();
     if (page === 'social' || page === 'friends-add' || page === 'friends-messages' || page === 'friends-meals') await renderSocial();
+    if (page === 'trainers') await renderTrainers();
     if (page === 'admin') await renderAdmin();
     wireDateControls();
   }
@@ -1002,38 +1004,108 @@ const PulsePlateApp = (() => {
       await runFoodSearch();
     };
     sourceButtons.forEach(b => b.addEventListener('click', () => setFoodSource(b.dataset.foodSource)));
+    const getSearchLabel = source => source === 'usda' ? 'USDA FoodData Central' : source === 'cnf' ? 'Canadian Nutrient File' : source === 'cofid' ? 'UK CoFID' : source === 'openfoodfacts' ? 'Open Food Facts' : 'Community Foods';
+    const searchEndpoint = source => source === 'openfoodfacts' ? '/api/foods/search-openfoodfacts' : source === 'cnf' ? '/api/foods/search-cnf' : source === 'cofid' ? '/api/foods/search-cofid' : '/api/foods/search';
+
+    const fetchCommunitySearchPage = async (query, page=1, pageSize=15) => {
+      const raw = query.trim();
+      const authorSearch = raw.startsWith('@');
+      let request = supabase.from('community_foods').select('*', { count: 'exact' }).eq('is_public', true).order('name').range((page-1)*pageSize, page*pageSize-1);
+      if (authorSearch) {
+        const ids = await findCommunityAuthorIds(raw);
+        if (!ids.length) return { foods: [], totalHits: 0, page, pageSize, totalPages: 0 };
+        request = request.in('user_id', ids);
+      } else if (raw) {
+        request = request.ilike('name', `%${raw.replace(/[%_]/g,'')}%`);
+      }
+      const {data,error,count}=await request;
+      if(error) throw error;
+      const foods=data||[];
+      if(foods.length){
+        const ids=[...new Set(foods.map(f=>f.user_id).filter(Boolean))];
+        const {data:profiles}=await supabase.from('profiles').select('id,display_name,role,business_name').in('id',ids);
+        const byId=new Map((profiles||[]).map(p=>[p.id,p]));
+        foods.forEach(f=>f.author_profile=byId.get(f.user_id)||null);
+      }
+      const totalHits=Number(count)||0;
+      return {foods,totalHits,page,pageSize,totalPages:Math.max(1,Math.ceil(totalHits/pageSize))};
+    };
+
+    const bindFoodResults = (container, foods, source) => {
+      if(source==='community'){
+        container.querySelectorAll('[data-community-food-id]').forEach(card => card.addEventListener('click', event => {
+          if(event.target.closest('[data-edit-community-food],[data-delete-community-food]')) return;
+          const food=foods.find(f=>String(f.id)===card.dataset.communityFoodId);
+          if(food) openServingModal(food,'community');
+        }));
+        container.querySelectorAll('[data-edit-community-food]').forEach(button=>button.addEventListener('click',async event=>{
+          event.stopPropagation(); const food=foods.find(f=>String(f.id)===button.dataset.editCommunityFood); if(food) openFoodEditor(food,'community');
+        }));
+        container.querySelectorAll('[data-delete-community-food]').forEach(button=>button.addEventListener('click',async event=>{
+          event.stopPropagation(); await deleteCommunityFood(button.dataset.deleteCommunityFood);
+        }));
+        return;
+      }
+      container.querySelectorAll('[data-open-food]').forEach(card => card.addEventListener('click', event => {
+        if (event.target.closest('[data-compare-food]')) return;
+        const food = foods.find(f => String(f.id) === card.dataset.openFood);
+        if (food) openServingModal(food, source);
+      }));
+      container.querySelectorAll('[data-compare-food]').forEach(button => button.addEventListener('click', async event => {
+        event.stopPropagation(); await openCrossReferenceModal(button.dataset.compareFoodName);
+      }));
+    };
+
+    const renderPagedSearchModal = (query, source, initialData) => {
+      const overlay=document.createElement('div'); overlay.className='modal-overlay';
+      overlay.innerHTML=`<section class="modal-card food-search-modal" role="dialog" aria-modal="true" aria-labelledby="foodSearchModalTitle"><button class="modal-close" data-close-food-search type="button" aria-label="Close">×</button><p class="eyebrow">${escapeHtml(getSearchLabel(source))}</p><h2 id="foodSearchModalTitle">Search results</h2><p class="page-copy">Showing 15 foods per page. Select a food to choose its serving.</p><div data-food-modal-results></div><div class="food-search-pagination" data-food-pagination></div></section>`;
+      document.body.appendChild(overlay);
+      overlay.querySelector('[data-close-food-search]').onclick=()=>overlay.remove();
+      const results=overlay.querySelector('[data-food-modal-results]'); const pagination=overlay.querySelector('[data-food-pagination]');
+      let activePage=1;
+      const loadPage=async page=>{
+        results.innerHTML='<p class="page-copy">Loading results…</p>'; pagination.innerHTML='';
+        try{
+          let data;
+          if(source==='community') data=page===1 && initialData ? initialData : await fetchCommunitySearchPage(query,page,15);
+          else { const response=await fetch(`${searchEndpoint(source)}?q=${encodeURIComponent(query)}&page=${page}&pageSize=15`); data=await response.json(); if(!response.ok) throw new Error(data.error||'Food search failed.'); }
+          activePage=Number(data.page)||page; const foods=Array.isArray(data.foods)?data.foods:[];
+          if(!foods.length){results.innerHTML='<p class="page-copy">No foods found on this page.</p>';return;}
+          results.innerHTML=foods.map(food=>source==='community'?communityFoodCard(food):foodCard(food,source)).join('');
+          bindFoodResults(results,foods,source);
+          const totalPages=Math.max(1,Number(data.totalPages)||Math.ceil((Number(data.totalHits)||foods.length)/15));
+          if(totalPages>1){
+            const buttons=[]; const first=Math.max(1,activePage-2), last=Math.min(totalPages,first+4);
+            if(activePage>1) buttons.push(`<button type="button" class="ghost-button" data-page="${activePage-1}">Previous</button>`);
+            for(let i=first;i<=last;i++) buttons.push(`<button type="button" class="${i===activePage?'primary-button':'ghost-button'}" data-page="${i}">${i}</button>`);
+            if(activePage<totalPages) buttons.push(`<button type="button" class="ghost-button" data-page="${activePage+1}">Next</button>`);
+            pagination.innerHTML=buttons.join(''); pagination.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>loadPage(Number(b.dataset.page)));
+          }
+        }catch(error){results.innerHTML=`<p class="page-copy">${escapeHtml(error.message)}</p>`;}
+      };
+      loadPage(1);
+    };
+
     const runFoodSearch = async () => {
       const q = search.value.trim();
       if (foodSource === 'personal') { await renderPersonalFoods(); return; }
       if (q.length < 2) {
-        const label = foodSource === 'usda' ? 'USDA FoodData Central' : foodSource === 'cnf' ? 'Canadian Nutrient File' : foodSource === 'cofid' ? 'UK CoFID' : foodSource === 'openfoodfacts' ? 'Open Food Facts' : 'community foods';
-        list.innerHTML = `<p class="page-copy">Type at least two characters to search ${label}.</p>`;
+        list.innerHTML = `<p class="page-copy">Type at least two characters to search ${getSearchLabel(foodSource)}.</p>`;
         return;
       }
-      const searchLabel = foodSource === 'usda' ? 'USDA FoodData Central' : foodSource === 'cnf' ? 'Canadian Nutrient File' : foodSource === 'cofid' ? 'UK CoFID' : foodSource === 'openfoodfacts' ? 'Open Food Facts' : 'community foods';
-      list.innerHTML = `<p class="page-copy">Searching ${searchLabel}…</p>`;
+      list.innerHTML = `<p class="page-copy">Searching ${getSearchLabel(foodSource)}…</p>`;
       try {
-        if (foodSource === 'community') {
-          await renderCommunityFoods(q);
-          return;
-        }
-        const endpoint = foodSource === 'openfoodfacts' ? '/api/foods/search-openfoodfacts' : foodSource === 'cnf' ? '/api/foods/search-cnf' : foodSource === 'cofid' ? '/api/foods/search-cofid' : '/api/foods/search';
-        const response = await fetch(`${endpoint}?q=${encodeURIComponent(q)}`);
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Food search failed.');
-        const foods = Array.isArray(data.foods) ? data.foods : [];
-        const rejectedNotice = Number(data.verification?.rejectedInvalidRecords || 0) > 0 ? `<p class="save-status">${Number(data.verification.rejectedInvalidRecords)} USDA result${Number(data.verification.rejectedInvalidRecords) === 1 ? '' : 's'} were hidden because their macro values failed basic physical consistency checks.</p>` : '';
-        const noResults = foodSource === 'openfoodfacts' ? 'No matching Open Food Facts foods found.' : foodSource === 'cnf' ? 'No matching Canadian Nutrient File foods found.' : foodSource === 'cofid' ? (data.configured ? 'No matching CoFID foods found.' : 'UK CoFID is not configured. The included normalized dataset should be present in the server package.') : 'No matching USDA foods found.';
-        list.innerHTML = foods.length ? `${rejectedNotice}<p class="food-search-count">Showing ${foods.length} result${foods.length === 1 ? '' : 's'}${data.totalHits ? ` of ${Number(data.totalHits).toLocaleString()}` : ''}.</p>${foods.map(food => foodCard(food, foodSource)).join('')}` : `${rejectedNotice}<p class="page-copy">${noResults}</p>`;
-        list.querySelectorAll('[data-open-food]').forEach(card => card.addEventListener('click', (event) => {
-          if (event.target.closest('[data-compare-food]')) return;
-          const food = foods.find(f => String(f.id) === card.dataset.openFood);
-          if (food) openServingModal(food, foodSource);
-        }));
-        list.querySelectorAll('[data-compare-food]').forEach(button => button.addEventListener('click', async event => {
-          event.stopPropagation();
-          await openCrossReferenceModal(button.dataset.compareFoodName);
-        }));
+        let data;
+        if(foodSource==='community') data=await fetchCommunitySearchPage(q,1,15);
+        else { const response=await fetch(`${searchEndpoint(foodSource)}?q=${encodeURIComponent(q)}&page=1&pageSize=15`); data=await response.json(); if(!response.ok) throw new Error(data.error||'Food search failed.'); }
+        const foods=Array.isArray(data.foods)?data.foods:[];
+        const rejectedNotice=Number(data.verification?.rejectedInvalidRecords||0)>0?`<p class="save-status">${Number(data.verification.rejectedInvalidRecords)} USDA result${Number(data.verification.rejectedInvalidRecords)===1?'':'s'} were hidden because their macro values failed basic physical consistency checks.</p>`:'';
+        const noResults=foodSource==='openfoodfacts'?'No matching Open Food Facts foods found.':foodSource==='cnf'?'No matching Canadian Nutrient File foods found.':foodSource==='cofid'?(data.configured?'No matching CoFID foods found.':'UK CoFID is not configured. The included normalized dataset should be present in the server package.'):'No matching foods found.';
+        const visible=foods.slice(0,10);
+        const viewAll=Number(data.totalHits||foods.length)>10?`<div class="food-search-view-all"><button type="button" class="ghost-button" data-view-all-foods>View all results</button></div>`:'';
+        list.innerHTML=visible.length?`${rejectedNotice}<p class="food-search-count">Showing ${visible.length} result${visible.length===1?'':'s'}${data.totalHits?` of ${Number(data.totalHits).toLocaleString()}`:''}.</p>${visible.map(food=>foodSource==='community'?communityFoodCard(food):foodCard(food,foodSource)).join('')}${viewAll}`:`${rejectedNotice}<p class="page-copy">${noResults}</p>`;
+        bindFoodResults(list,visible,foodSource);
+        list.querySelector('[data-view-all-foods]')?.addEventListener('click',()=>renderPagedSearchModal(q,foodSource,data));
       } catch (error) { console.error(error); list.innerHTML = `<p class="page-copy">${escapeHtml(error.message)}</p>`; }
     };
     search.oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(runFoodSearch, 350); };
@@ -1095,7 +1167,7 @@ const PulsePlateApp = (() => {
       <div class="food-card-main"><strong>${escapeHtml(food.name)}</strong>
       <p>My Food · ${moneyless(food.serving_amount)} ${escapeHtml(food.serving_unit)}</p>
       <div class="macro-row"><span>${moneyless(food.calories)} cal</span><span>${moneyless(food.protein)}g protein</span><span>${moneyless(food.carbs)}g carbs</span><span>${moneyless(food.fat)}g fat</span></div></div>
-      <button type="button" class="food-delete-button" data-delete-personal-food="${food.id}" aria-label="Delete ${escapeHtml(food.name)}">Delete</button>
+      <div class="food-card-actions"><button type="button" class="ghost-button" data-edit-personal-food="${food.id}">Edit</button><button type="button" class="food-delete-button" data-delete-personal-food="${food.id}" aria-label="Delete ${escapeHtml(food.name)}">Delete</button></div>
     </div>`;
   }
 
@@ -1107,8 +1179,8 @@ const PulsePlateApp = (() => {
       <div class="food-card-main"><strong>${escapeHtml(food.name)}</strong>
       <p>Community Food · ${escapeHtml(food.serving_options?.[0]?.amount || 1)} ${escapeHtml(food.serving_options?.[0]?.unit || 'serving')}</p>
       <p class="food-author">@${escapeHtml(author)} · ${escapeHtml(role)}</p>
-      <div class="macro-row"><span>${moneyless(food.calories_per_100g)} cal</span><span>${moneyless(food.protein_per_100g)}g protein</span><span>${moneyless(food.carbs_per_100g)}g carbs</span><span>${moneyless(food.fat_per_100g)}g fat</span></div><small class="food-basis-note">Nutrition basis: per 100 g</small></div>
-      ${mine ? `<button type="button" class="food-delete-button" data-delete-community-food="${food.id}" aria-label="Delete ${escapeHtml(food.name)}">Delete</button>` : ''}
+      <div class="macro-row"><span>${moneyless(food.calories_per_100g)} cal</span><span>${moneyless(food.protein_per_100g)}g protein</span><span>${moneyless(food.carbs_per_100g)}g carbs</span><span>${moneyless(food.fat_per_100g)}g fat</span></div></div>
+      ${mine ? `<div class="food-card-actions"><button type="button" class="ghost-button" data-edit-community-food="${food.id}">Edit</button><button type="button" class="food-delete-button" data-delete-community-food="${food.id}" aria-label="Delete ${escapeHtml(food.name)}">Delete</button></div>` : ''}
     </div>`;
   }
 
@@ -1134,6 +1206,11 @@ const PulsePlateApp = (() => {
       if (e.target.closest('[data-delete-community-food]')) return;
       const food = foods.find(f => String(f.id) === card.dataset.communityFoodId);
       if (food) openServingModal(food, 'community');
+    }));
+    box.querySelectorAll('[data-edit-community-food]').forEach(button => button.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const food = foods.find(f => String(f.id) === button.dataset.editCommunityFood);
+      if (food) openFoodEditor(food, 'community');
     }));
     box.querySelectorAll('[data-delete-community-food]').forEach(button => button.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -1166,7 +1243,8 @@ const PulsePlateApp = (() => {
       foods.forEach(f=>f.author_profile=byId.get(f.user_id)||null);
     }
     box.innerHTML=foods.length?foods.map(communityFoodCard).join(''):'<p class="page-copy">No published community foods found.</p>';
-    box.querySelectorAll('[data-community-food-id]').forEach(card=>card.addEventListener('click',(e)=>{if(e.target.closest('[data-delete-community-food]'))return;const food=foods.find(f=>String(f.id)===card.dataset.communityFoodId);if(food)openServingModal(food,'community');}));
+    box.querySelectorAll('[data-community-food-id]').forEach(card=>card.addEventListener('click',(e)=>{if(e.target.closest('[data-delete-community-food],[data-edit-community-food]'))return;const food=foods.find(f=>String(f.id)===card.dataset.communityFoodId);if(food)openServingModal(food,'community');}));
+    box.querySelectorAll('[data-edit-community-food]').forEach(button=>button.addEventListener('click',async(e)=>{e.stopPropagation();const food=foods.find(f=>String(f.id)===button.dataset.editCommunityFood);if(food)openFoodEditor(food,'community');}));
     box.querySelectorAll('[data-delete-community-food]').forEach(button=>button.addEventListener('click',async(e)=>{e.stopPropagation();await deleteCommunityFood(button.dataset.deleteCommunityFood);}));
   }
 
@@ -1272,6 +1350,48 @@ const PulsePlateApp = (() => {
     return `Add exact serving choices when you know them (for example, 4 oz, 100 g, 1 egg, or 1 cup). If you enter nutrition for an additional serving, MacroSync uses those values directly instead of converting them. If you do not provide an exact option, you can either keep the food limited to its default serving or allow estimated conversions.`;
   }
 
+  function openFoodEditor(food, source='community') {
+    const isCommunity = source === 'community';
+    const defaultOption = Array.isArray(food.serving_options) && food.serving_options.length
+      ? food.serving_options[0]
+      : {amount: food.serving_amount || 1, unit: food.serving_unit || 'serving', grams: food.serving_grams || 100,
+         calories: food.calories ?? Number(food.calories_per_100g || 0) * Number(food.serving_grams || 100) / 100,
+         protein: food.protein ?? Number(food.protein_per_100g || 0) * Number(food.serving_grams || 100) / 100,
+         carbs: food.carbs ?? Number(food.carbs_per_100g || 0) * Number(food.serving_grams || 100) / 100,
+         fat: food.fat ?? Number(food.fat_per_100g || 0) * Number(food.serving_grams || 100) / 100};
+    const options = (Array.isArray(food.serving_options) ? food.serving_options : []).slice(1);
+    const cal = Number(defaultOption.calories ?? food.calories ?? 0);
+    const pro = Number(defaultOption.protein ?? food.protein ?? 0);
+    const carb = Number(defaultOption.carbs ?? food.carbs ?? 0);
+    const fat = Number(defaultOption.fat ?? food.fat ?? 0);
+    const overlay=document.createElement('div'); overlay.className='modal-overlay';
+    overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">${isCommunity?'Community Food':'My Food'}</p><h2>Edit food</h2><p class="page-copy">Correct the food without deleting and recreating it. Changes are saved to this food record.${isCommunity?' If this Community Food has a linked private copy in My Foods, that copy will be updated too.':''}</p><div class="form-grid"><div class="field"><label>Name</label><input data-e-name maxlength="120" value="${escapeHtml(food.name)}"></div><div class="field"><label>Default serving amount</label><input data-e-amount type="number" min="0.01" step="0.01" value="${escapeHtml(String(defaultOption.amount||1))}"></div><div class="field"><label>Default serving unit</label><input data-e-unit maxlength="40" value="${escapeHtml(defaultOption.unit||'serving')}"></div><div class="field"><label>Default serving weight (g)</label><input data-e-grams type="number" min="0.01" step="0.01" value="${escapeHtml(String(defaultOption.grams||100))}"></div><div class="field"><label>Calories for default serving</label><input data-e-cal type="number" min="0" step="0.1" value="${escapeHtml(String(cal))}"></div><div class="field"><label>Protein (g)</label><input data-e-protein type="number" min="0" step="0.1" value="${escapeHtml(String(pro))}"></div><div class="field"><label>Carbs (g)</label><input data-e-carbs type="number" min="0" step="0.1" value="${escapeHtml(String(carb))}"></div><div class="field"><label>Fat (g)</label><input data-e-fat type="number" min="0" step="0.1" value="${escapeHtml(String(fat))}"></div></div><div class="serving-options-builder"><div class="serving-option-builder-header"><div><h3>Additional serving options</h3><p class="page-copy">Edit or remove the serving choices you previously created.</p></div><button type="button" class="ghost-button" data-add-serving-option>+ Add option</button></div><div data-serving-option-list></div></div><div class="field"><label>When an exact option is not provided</label><select data-e-conversion><option value="none" ${food.conversion_mode==='none'?'selected':''}>Do not offer gram/ounce/unit conversions</option><option value="estimate" ${food.conversion_mode!=='none'?'selected':''}>Allow estimated conversions</option></select></div><p class="save-status" data-e-status></p><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-e-save type="button">Save changes</button></div></section>`;
+    document.body.appendChild(overlay); overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());
+    const list=overlay.querySelector('[data-serving-option-list]'); options.forEach((o,i)=>{list.insertAdjacentHTML('beforeend',servingOptionRow(i,o));}); attachServingOptionEditor(overlay);
+    overlay.querySelector('[data-e-save]').onclick=async()=>{
+      const status=overlay.querySelector('[data-e-status]'); const name=overlay.querySelector('[data-e-name]').value.trim();
+      const amount=Number(overlay.querySelector('[data-e-amount]').value), grams=Number(overlay.querySelector('[data-e-grams]').value), unit=overlay.querySelector('[data-e-unit]').value.trim()||'serving';
+      const values=[Number(overlay.querySelector('[data-e-cal]').value),Number(overlay.querySelector('[data-e-protein]').value),Number(overlay.querySelector('[data-e-carbs]').value),Number(overlay.querySelector('[data-e-fat]').value)];
+      const [calories,protein,carbs,fat]=values; const conversionMode=overlay.querySelector('[data-e-conversion]').value; const extraOptions=collectServingOptions(overlay);
+      const errorMsg=validateDisplayName(name); if(errorMsg){status.textContent=errorMsg;return;}
+      if(!Number.isFinite(amount)||amount<=0||!Number.isFinite(grams)||grams<=0||values.some(v=>!Number.isFinite(v)||v<0)){status.textContent='Enter valid nutrition values and a positive default serving weight.';return;}
+      if(protein+carbs+fat>100.5){status.textContent='The default serving macros are too large to be valid.';return;}
+      for(const o of extraOptions){if(!Number.isFinite(o.amount)||o.amount<=0||!o.unit||!Number.isFinite(o.grams)||o.grams<=0){status.textContent='Complete every additional serving option, including its gram weight.';return;}if(o.nutritionProvided&&[o.calories,o.protein,o.carbs,o.fat].some(v=>!Number.isFinite(v)||v<0)){status.textContent='Additional serving nutrition must use valid non-negative values.';return;}}
+      status.textContent='Saving…';
+      const p100={calories_per_100g:calories*100/grams,protein_per_100g:protein*100/grams,carbs_per_100g:carbs*100/grams,fat_per_100g:fat*100/grams};
+      const allOptions=[{amount,unit,grams,calories,protein,carbs,fat},...extraOptions];
+      if(isCommunity){
+        const {data:updated,error}=await supabase.from('community_foods').update({name, ...p100, serving_options:allOptions, conversion_mode:conversionMode}).eq('id',food.id).eq('user_id',user.id).select('*').single();
+        if(error){status.textContent=error.message;return;}
+        if(updated.personal_food_id){const {error:personalError}=await supabase.from('user_foods').update({name,serving_amount:amount,serving_unit:unit,serving_grams:grams,serving_options:extraOptions,conversion_mode:conversionMode,calories,protein,carbs,fat,source:'community'}).eq('id',updated.personal_food_id).eq('user_id',user.id);if(personalError){status.textContent=personalError.message;return;}}
+      } else {
+        const {data:updated,error}=await supabase.from('user_foods').update({name,serving_amount:amount,serving_unit:unit,serving_grams:grams,serving_options:extraOptions,conversion_mode:conversionMode,calories,protein,carbs,fat}).eq('id',food.id).eq('user_id',user.id).select('*').single();
+        if(error){status.textContent=error.message;return;}
+      }
+      overlay.remove(); await renderPersonalFoods(); await renderMyCommunityFoods(); await renderCommunityFoods($('[data-food-search]')?.value || '');
+    };
+  }
+
   function openCommunityFoodModal(){
     const overlay=document.createElement('div');overlay.className='modal-overlay';
     overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Food databases</p><h2>Add a food</h2><p class="page-copy">Set one default serving and its nutrition. Then add optional exact serving choices for people who prefer grams, ounces, cups, or individual units.</p><div class="form-grid"><div class="field"><label>Name</label><input data-c-name maxlength="120" placeholder="Egg"></div><div class="field"><label>Default serving amount</label><input data-c-amount type="number" min="0.01" step="0.01" value="1"></div><div class="field"><label>Default serving unit</label><input data-c-unit maxlength="40" value="serving" placeholder="egg, slice, cup"></div><div class="field"><label>Default serving weight (g)</label><input data-c-grams type="number" min="0.01" step="0.01" value="100"></div><div class="field"><label>Calories for default serving</label><input data-c-cal type="number" min="0" step="0.1"></div><div class="field"><label>Protein (g)</label><input data-c-protein type="number" min="0" step="0.1"></div><div class="field"><label>Carbs (g)</label><input data-c-carbs type="number" min="0" step="0.1"></div><div class="field"><label>Fat (g)</label><input data-c-fat type="number" min="0" step="0.1"></div></div><div class="serving-options-builder"><div class="serving-option-builder-header"><div><h3>Additional serving options</h3><p class="page-copy">${servingOptionHelpText()}</p></div><button type="button" class="ghost-button" data-add-serving-option>+ Add option</button></div><div data-serving-option-list></div></div><div class="field"><label>When an exact option is not provided</label><select data-c-conversion><option value="none">Do not offer gram/ounce/unit conversions</option><option value="estimate">Allow estimated conversions</option></select><p class="field-help">Estimated conversions are based on the serving weight and may not match the source exactly.</p></div><label class="toggle-row"><input data-c-personal type="checkbox" checked><span><strong>Save to My Foods</strong><small>Keep a private copy in your personal food database.</small></span></label><label class="toggle-row"><input data-c-publish type="checkbox" checked><span><strong>Publish to Community Foods</strong><small>Make the food searchable by other MacroSync users.</small></span></label><p class="save-status" data-c-status></p><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-c-save type="button">Save food</button></div></section>`;
@@ -1303,6 +1423,11 @@ const PulsePlateApp = (() => {
       if (e.target.closest('[data-delete-personal-food]')) return;
       const food = foods.find(f => String(f.id) === card.dataset.personalFoodId);
       if (food) openServingModal(food, 'personal');
+    }));
+    box.querySelectorAll('[data-edit-personal-food]').forEach(button => button.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const food = (await supabase.from('user_foods').select('*').eq('id',button.dataset.editPersonalFood).eq('user_id',user.id).maybeSingle()).data;
+      if (food) openFoodEditor(food, 'personal');
     }));
     box.querySelectorAll('[data-delete-personal-food]').forEach(button => button.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -1684,6 +1809,46 @@ const PulsePlateApp = (() => {
     }
   }
 
+  const TRAINER_TYPES = ['General Fitness','Strength Training','Weight Training','Conditioning','Sports Performance','Mobility / Flexibility','Functional Training','Group Training','Beginner Training','Youth Training','Senior Fitness','Nutrition / Meal Planning','Other'];
+  const TRAINER_TYPE_IDS = Object.fromEntries(TRAINER_TYPES.map((name,i)=>[name,i+1]));
+  const TRAINER_TYPE_NAMES = Object.fromEntries(TRAINER_TYPES.map((name,i)=>[i+1,name]));
+  const TRAINER_PRICES = {1:'Under $25/session',2:'$25–$49/session',3:'$50–$74/session',4:'$75–$99/session',5:'$100+/session',6:'Contact trainer'};
+
+  function trainerProfileFieldsMarkup(profile={}) {
+    const selected = Array.isArray(profile.training_types) ? profile.training_types : [];
+    const types = TRAINER_TYPES.map(t => `<label class="choice-chip"><input type="checkbox" name="trainerType" value="${TRAINER_TYPE_IDS[t]}" ${selected.includes(TRAINER_TYPE_IDS[t]) || selected.includes(t)?'checked':''}><span>${escapeHtml(t)}</span></label>`).join('');
+    return `<div class="trainer-profile-form" data-trainer-profile-form>
+      <div class="field"><label for="trainerBio">Short bio <small>(optional, maximum 250 words)</small></label><textarea id="trainerBio" rows="7" maxlength="5000" placeholder="Tell potential clients a little about your training approach and experience…">${escapeHtml(profile.bio || '')}</textarea><small class="field-help" data-trainer-word-count>0 / 250 words</small></div>
+      <div class="field"><label for="trainerLocation">Based in <small>(optional)</small></label><input id="trainerLocation" maxlength="160" value="${escapeHtml(profile.location || '')}" placeholder="City, state or business area"></div>
+      <div class="field"><label for="trainerPhone">Phone <small>(optional)</small></label><input id="trainerPhone" type="tel" maxlength="32" value="${escapeHtml(profile.phone || '')}"></div>
+      <div class="field"><label>Training types <small>(optional, recommended)</small></label><div class="choice-chip-grid">${types}</div></div>
+      <div class="form-grid-2"><div class="field"><label for="trainerPriceRange">Price range <small>(optional, recommended)</small></label><select id="trainerPriceRange"><option value="">Not specified</option>${Object.entries(TRAINER_PRICES).map(([v,l])=>`<option value="${v}" ${String(profile.price_range||'')===v?'selected':''}>${l}</option>`).join('')}</select></div><div class="field"><label for="trainerYears">Years of experience <small>(optional, recommended)</small></label><input id="trainerYears" type="number" min="0" max="100" step="1" value="${profile.years_experience ?? ''}"></div></div>
+      <div class="form-grid-2"><div class="field"><label for="trainerInstagram">Instagram <small>(optional)</small></label><input id="trainerInstagram" maxlength="80" placeholder="username" value="${escapeHtml(profile.instagram || '')}"></div><div class="field"><label for="trainerFacebook">Facebook <small>(optional)</small></label><input id="trainerFacebook" maxlength="120" placeholder="profile or username" value="${escapeHtml(profile.facebook || '')}"></div><div class="field"><label for="trainerTiktok">TikTok <small>(optional)</small></label><input id="trainerTiktok" maxlength="80" placeholder="username" value="${escapeHtml(profile.tiktok || '')}"></div><div class="field"><label for="trainerYoutube">YouTube <small>(optional)</small></label><input id="trainerYoutube" maxlength="120" placeholder="channel or handle" value="${escapeHtml(profile.youtube || '')}"></div><div class="field"><label for="trainerWebsite">Website <small>(optional)</small></label><input id="trainerWebsite" maxlength="200" type="url" placeholder="https://…" value="${escapeHtml(profile.website || '')}"></div></div>
+      <label class="toggle-row"><input id="trainerPublic" type="checkbox" ${profile.is_public?'checked':''}><span><strong>List me in Find a Trainer</strong><small>Keep this off if you do not want your trainer profile publicly searchable.</small></span></label>
+      <button class="primary-button" type="submit">Save trainer profile</button><p class="settings-status" data-trainer-profile-status role="status"></p>
+    </div>`;
+  }
+
+  function trainerWordCount(text) { return text.trim() ? text.trim().split(/\s+/).length : 0; }
+  async function renderTrainerSettings(profile) {
+    const host = $('[data-trainer-profile-settings]'); if (!host) return;
+    if (profile?.role !== 'trainer') { host.hidden = true; $('[data-settings-tab=trainer]')?.setAttribute('hidden','hidden'); return; }
+    $('[data-settings-tab=trainer]')?.removeAttribute('hidden');
+    const { data, error } = await supabase.from('trainer_profiles').select('*').eq('user_id', user.id).maybeSingle();
+    if (error) { host.hidden = false; host.innerHTML = `<p class="settings-status">${escapeHtml(error.message)}</p>`; return; }
+    host.hidden = false; host.innerHTML = `<div class="panel-header"><div><p class="eyebrow">Personal trainer</p><h2>Trainer profile</h2><p class="page-copy">This optional profile helps clients find you. MacroSync is not a social network; your profile is only listed when you choose to make it public.</p></div></div>${trainerProfileFieldsMarkup(data || {})}`;
+    const form=host.querySelector('[data-trainer-profile-form]'), bio=host.querySelector('#trainerBio'), count=host.querySelector('[data-trainer-word-count]');
+    const updateCount=()=>{ const n=trainerWordCount(bio.value); count.textContent=`${n} / 250 words`; count.style.color=n>250?'var(--red)':''; };
+    bio.addEventListener('input',updateCount); updateCount();
+    form.addEventListener('submit', async e=>{ e.preventDefault(); const wordCount=trainerWordCount(bio.value); const status=host.querySelector('[data-trainer-profile-status]'); if(wordCount>250){status.textContent='Your bio must be 250 words or fewer.';return;} const years=host.querySelector('#trainerYears').value; const payload={user_id:user.id,bio:bio.value.trim()||null,location:host.querySelector('#trainerLocation').value.trim()||null,phone:host.querySelector('#trainerPhone').value.trim()||null,instagram:host.querySelector('#trainerInstagram').value.trim()||null,facebook:host.querySelector('#trainerFacebook').value.trim()||null,tiktok:host.querySelector('#trainerTiktok').value.trim()||null,youtube:host.querySelector('#trainerYoutube').value.trim()||null,website:host.querySelector('#trainerWebsite').value.trim()||null,training_types:[...host.querySelectorAll('input[name="trainerType"]:checked')].map(x=>Number(x.value)),price_range:host.querySelector('#trainerPriceRange').value?Number(host.querySelector('#trainerPriceRange').value):null,years_experience:years===''?null:Number(years),is_public:host.querySelector('#trainerPublic').checked,updated_at:new Date().toISOString()}; status.textContent='Saving…'; const {error}=await supabase.from('trainer_profiles').upsert(payload,{onConflict:'user_id'}); status.textContent=error?error.message:'Trainer profile saved.'; });
+  }
+
+  function trainerPriceLabel(value){ return TRAINER_PRICES[value] || 'Price not specified'; }
+  function socialUrl(kind,value){ if(!value)return null; const v=value.trim(); if(/^https?:\/\//i.test(v))return v; const bases={instagram:'https://www.instagram.com/',facebook:'https://www.facebook.com/',tiktok:'https://www.tiktok.com/@',youtube:'https://www.youtube.com/@'}; return bases[kind]?bases[kind]+v.replace(/^@/,''):null; }
+  function renderTrainerCard(t){ const types=(t.training_types||[]).slice(0,4).map(x=>escapeHtml(TRAINER_TYPE_NAMES[x] || x)).join(' · '); return `<article class="trainer-card"><div class="trainer-card-top"><div><div class="profile-strip"><span class="avatar">${escapeHtml((t.display_name||'T').charAt(0).toUpperCase())}</span><span><strong>${escapeHtml(t.display_name||'Trainer')}</strong>${t.business_name?`<p>${escapeHtml(t.business_name)}</p>`:''}</span></div></div><span class="role-badge trainer">Personal Trainer</span></div><div class="trainer-meta">${t.location?`<span>${escapeHtml(t.location)}</span>`:''}${t.years_experience!=null?`<span>${t.years_experience} years experience</span>`:''}${t.price_range?`<span>${escapeHtml(trainerPriceLabel(t.price_range))}</span>`:''}</div>${types?`<p class="trainer-types">${types}</p>`:''}${t.bio?`<p class="trainer-bio">${escapeHtml(t.bio)}</p>`:''}<button class="primary-button" type="button" data-view-trainer="${t.user_id}">View profile</button></article>`; }
+  async function showTrainerProfile(id){ const {data,error}=await supabase.rpc('get_trainer_profile',{p_trainer_id:id}); if(error) throw error; const t=Array.isArray(data)?data[0]:data; if(!t) throw new Error('Trainer profile not found.'); const overlay=document.createElement('div'); overlay.className='modal-overlay'; overlay.innerHTML=`<section class="modal-card trainer-detail-modal" role="dialog" aria-modal="true"><button class="modal-close" data-close-trainer type="button" aria-label="Close">×</button><p class="eyebrow">Personal trainer</p><h2>${escapeHtml(t.display_name)}</h2>${t.business_name?`<p class="page-copy">${escapeHtml(t.business_name)}</p>`:''}<div class="trainer-meta">${t.location?`<span>${escapeHtml(t.location)}</span>`:''}${t.years_experience!=null?`<span>${t.years_experience} years experience</span>`:''}${t.price_range?`<span>${escapeHtml(trainerPriceLabel(t.price_range))}</span>`:''}</div>${t.training_types?.length?`<div class="trainer-detail-section"><h3>Training</h3><p>${t.training_types.map(x=>escapeHtml(TRAINER_TYPE_NAMES[x] || x)).join(' · ')}</p></div>`:''}${t.bio?`<div class="trainer-detail-section"><h3>About</h3><p>${escapeHtml(t.bio)}</p></div>`:''}${t.location?`<div class="trainer-detail-section"><h3>Based in</h3><p>${escapeHtml(t.location)}</p></div>`:''}${t.phone?`<div class="trainer-detail-section"><h3>Phone</h3><p>${escapeHtml(t.phone)}</p></div>`:''}<div class="trainer-detail-section"><h3>Contact & links</h3><div class="trainer-links">${['instagram','facebook','tiktok','youtube','website'].map(k=>{const u=socialUrl(k,t[k]);return u?`<a class="ghost-button" href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer">${k[0].toUpperCase()+k.slice(1)}</a>`:''}).join('')}</div></div><div class="modal-actions"><button class="primary-button" type="button" data-trainer-connect="${t.user_id}">Connect with trainer</button></div><p class="settings-status" data-trainer-connect-status role="status"></p></section>`; document.body.appendChild(overlay); overlay.querySelector('[data-close-trainer]').onclick=()=>overlay.remove(); overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()}); overlay.querySelector('[data-trainer-connect]').onclick=async()=>{const st=overlay.querySelector('[data-trainer-connect-status]'); st.textContent='Sending connection request…'; const {error}=await supabase.rpc('request_trainer_connection',{p_trainer_id:t.user_id}); if(error){st.textContent=error.code==='23505'?'A connection request already exists.':error.message;return;} st.textContent='Connection request sent. Once accepted, you can use MacroSync messaging and trainer/client sharing.';}; }
+  async function renderTrainers(){ const list=$('#trainerList'); if(!list)return; const run=async()=>{list.innerHTML='<p class="page-copy">Searching…</p>'; const {data,error}=await supabase.rpc('search_trainers',{p_query:$('#trainerSearch').value.trim(),p_training_type:$('#trainerType').value?Number($('#trainerType').value):null,p_price_range:$('#trainerPrice').value?Number($('#trainerPrice').value):null}); if(error)throw error; list.innerHTML=data?.length?data.map(renderTrainerCard).join(''):'<p class="page-copy">No public trainers matched your search.</p>'; list.querySelectorAll('[data-view-trainer]').forEach(b=>b.onclick=()=>showTrainerProfile(b.dataset.viewTrainer).catch(e=>alert(e.message)));}; $('#trainerSearchButton').onclick=()=>run().catch(e=>{list.innerHTML=`<p class="settings-status">${escapeHtml(e.message)}</p>`}); $('#trainerSearch').onkeydown=e=>{if(e.key==='Enter')run().catch(console.error)}; await run(); }
+
   async function renderSettings(){
     const nameInput = $('#settingsDisplayName');
     const emailInput = $('#settingsEmail');
@@ -1703,6 +1868,7 @@ const PulsePlateApp = (() => {
     if (nameInput) nameInput.value = profile?.display_name || user.user_metadata?.display_name || '';
     if (emailInput) emailInput.value = user.email || profile?.email || '';
     if (roleText) roleText.textContent = profile?.role === 'trainer' ? `Personal trainer${profile?.business_name ? ` · ${profile.business_name}` : ''}` : 'Normal user';
+    await renderTrainerSettings(profile);
 
     $('[data-settings-profile-form]')?.addEventListener('submit', async event => {
       event.preventDefault();
@@ -1762,7 +1928,7 @@ const PulsePlateApp = (() => {
     $$('[data-admin-only]').forEach(el => { el.hidden = !isAdmin; });
     const limitedMinor = isLimitedMinorProfile(profile);
     if (limitedMinor) {
-      $$('a[href="social.html"], a[href="friends-add.html"], a[href="friends-messages.html"], a[href="friends-meals.html"], a[href="goals.html"], a[href="progress.html"], a[href="recipes.html"], a[href="account.html"], a[href="settings.html"]').forEach(el => { el.hidden = true; });
+      $$('a[href="social.html"], a[href="friends-add.html"], a[href="friends-messages.html"], a[href="friends-meals.html"], a[href="trainers.html"], a[href="goals.html"], a[href="progress.html"], a[href="recipes.html"], a[href="account.html"], a[href="settings.html"]').forEach(el => { el.hidden = true; });
       $$('[data-mobile-nav] a').forEach(el => { if (!['log_food.html','log.html'].includes(el.getAttribute('href'))) el.hidden = true; });
       $$('[data-mobile-menu] a').forEach(el => { if (!['log_food.html','log.html'].includes(el.getAttribute('href'))) el.hidden = true; });
     }
@@ -1958,7 +2124,10 @@ const PulsePlateApp = (() => {
     const list = $('[data-recipe-list]');
     const builder = $('[data-recipe-builder]');
     if (!list || !builder) return;
-    await loadRecipes(list);
+    let editingRecipeId = null;
+    const resetRecipeEditor = () => { editingRecipeId=null; builder.querySelector('[data-save-recipe]').textContent='Save Recipe'; builder.querySelector('[data-recipe-name]').value=''; builder.querySelector('[data-recipe-servings]').value='1'; builder.querySelector('[data-recipe-public]').checked=false; ingredients=[]; drawIngredients(); };
+    const beginRecipeEdit = (recipe) => { editingRecipeId=recipe.id; builder.querySelector('[data-save-recipe]').textContent='Update Recipe'; builder.querySelector('[data-recipe-name]').value=recipe.name; builder.querySelector('[data-recipe-servings]').value=recipe.servings; builder.querySelector('[data-recipe-public]').checked=Boolean(recipe.is_public); ingredients=(recipe.recipe_items||[]).map(i=>({name:i.food_name,amount:Number(String(i.serving||'1').split(' ')[0])||1,unit:String(i.serving||'serving').split(' ').slice(1).join(' ')||'serving',fdc_id:i.fdc_id,calories:Number(i.calories||0),protein:Number(i.protein||0),carbs:Number(i.carbs||0),fat:Number(i.fat||0),sourceLabel:'Saved ingredient'})); drawIngredients(); builder.scrollIntoView({behavior:'smooth',block:'start'}); };
+    await loadRecipes(list, beginRecipeEdit);
     const personalSearch = builder.querySelector('[data-recipe-personal-search]');
     const personalResults = builder.querySelector('[data-recipe-personal-results]');
     const communitySearch = builder.querySelector('[data-recipe-community-search]');
@@ -2089,23 +2258,27 @@ const PulsePlateApp = (() => {
     });
 
     builder.querySelector('[data-save-recipe]')?.addEventListener('click',async()=>{
-      const name=builder.querySelector('[data-recipe-name]').value.trim();
-      const servings=Math.max(1,Number(builder.querySelector('[data-recipe-servings]').value)||1);
-      const isPublic=Boolean(builder.querySelector('[data-recipe-public]')?.checked);
+      const name=builder.querySelector('[data-recipe-name]').value.trim(); const servings=Math.max(1,Number(builder.querySelector('[data-recipe-servings]').value)||1); const isPublic=Boolean(builder.querySelector('[data-recipe-public]')?.checked);
       if(!name||!ingredients.length){alert('Enter a recipe name and add at least one ingredient.');return;}
-      const {data:recipe,error}=await supabase.from('recipes').insert({user_id:user.id,name,servings,is_public:isPublic}).select('*').single();
-      if(error){alert(error.message);return;}
+      if(editingRecipeId){
+        const {error}=await supabase.from('recipes').update({name,servings,is_public:isPublic}).eq('id',editingRecipeId).eq('user_id',user.id); if(error){alert(error.message);return;}
+        const {error:deleteError}=await supabase.from('recipe_items').delete().eq('recipe_id',editingRecipeId).eq('user_id',user.id); if(deleteError){alert(deleteError.message);return;}
+        const rows=ingredients.map(i=>({recipe_id:editingRecipeId,user_id:user.id,food_name:i.name,serving:`${moneyless(i.amount)} ${i.unit}`,fdc_id:i.fdc_id,calories:i.calories,protein:i.protein,carbs:i.carbs,fat:i.fat}));
+        const {error:itemError}=await supabase.from('recipe_items').insert(rows); if(itemError){alert(itemError.message);return;}
+        const editedName=name; resetRecipeEditor(); await loadRecipes(list,beginRecipeEdit); alert(`${editedName} was updated.`); return;
+      }
+      const {data:recipe,error}=await supabase.from('recipes').insert({user_id:user.id,name,servings,is_public:isPublic}).select('*').single(); if(error){alert(error.message);return;}
       const rows=ingredients.map(i=>({recipe_id:recipe.id,user_id:user.id,food_name:i.name,serving:`${moneyless(i.amount)} ${i.unit}`,fdc_id:i.fdc_id,calories:i.calories,protein:i.protein,carbs:i.carbs,fat:i.fat}));
-      const {error:itemError}=await supabase.from('recipe_items').insert(rows);
-      if(itemError){alert(itemError.message);return;}
-      ingredients=[];builder.querySelector('[data-recipe-name]').value='';drawIngredients();await loadRecipes(list);alert(`${name} was saved.`);
-    });
+      const {error:itemError}=await supabase.from('recipe_items').insert(rows); if(itemError){alert(itemError.message);return;}
+      ingredients=[];builder.querySelector('[data-recipe-name]').value='';drawIngredients();await loadRecipes(list,beginRecipeEdit);alert(`${name} was saved.`);
+    });;
   }
 
-  async function loadRecipes(list){
+  async function loadRecipes(list,onEdit){
     const {data,error}=await supabase.from('recipes').select('*, recipe_items(*)').eq('user_id',user.id).order('name');
     if(error){list.innerHTML=`<p class="page-copy">${escapeHtml(error.message)}</p>`;return;}
-    const recipes=data||[];list.innerHTML=recipes.length?recipes.map(r=>{const items=r.recipe_items||[];const t=items.reduce((a,i)=>({calories:a.calories+Number(i.calories||0),protein:a.protein+Number(i.protein||0),carbs:a.carbs+Number(i.carbs||0),fat:a.fat+Number(i.fat||0)}),{calories:0,protein:0,carbs:0,fat:0});return `<article class="recipe-card"><div><h2>${escapeHtml(r.name)}</h2><p>${items.length} ingredient${items.length===1?'':'s'} · ${moneyless(t.calories/Number(r.servings||1))} cal per serving</p><div class="macro-row"><span>P ${moneyless(t.protein/Number(r.servings||1))}g</span><span>C ${moneyless(t.carbs/Number(r.servings||1))}g</span><span>F ${moneyless(t.fat/Number(r.servings||1))}g</span></div></div><button class="primary-button" type="button" data-use-recipe="${r.id}">Use recipe</button></article>`}).join(''):'<p class="page-copy">No recipes yet. Create your first reusable recipe above.</p>';
+    const recipes=data||[];list.innerHTML=recipes.length?recipes.map(r=>{const items=r.recipe_items||[];const t=items.reduce((a,i)=>({calories:a.calories+Number(i.calories||0),protein:a.protein+Number(i.protein||0),carbs:a.carbs+Number(i.carbs||0),fat:a.fat+Number(i.fat||0)}),{calories:0,protein:0,carbs:0,fat:0});return `<article class="recipe-card"><div><h2>${escapeHtml(r.name)}</h2><p>${items.length} ingredient${items.length===1?'':'s'} · ${moneyless(t.calories/Number(r.servings||1))} cal per serving</p><div class="macro-row"><span>P ${moneyless(t.protein/Number(r.servings||1))}g</span><span>C ${moneyless(t.carbs/Number(r.servings||1))}g</span><span>F ${moneyless(t.fat/Number(r.servings||1))}g</span></div></div><div class="recipe-card-actions"><button class="ghost-button" type="button" data-edit-recipe="${r.id}">Edit</button><button class="primary-button" type="button" data-use-recipe="${r.id}">Use recipe</button></div></article>`}).join(''):'<p class="page-copy">No recipes yet. Create your first reusable recipe above.</p>';
+    list.querySelectorAll('[data-edit-recipe]').forEach(b=>b.onclick=()=>onEdit?.(recipes.find(r=>String(r.id)===b.dataset.editRecipe)));
     list.querySelectorAll('[data-use-recipe]').forEach(b=>b.onclick=()=>openRecipeLogModal(recipes.find(r=>String(r.id)===b.dataset.useRecipe)));
   }
 

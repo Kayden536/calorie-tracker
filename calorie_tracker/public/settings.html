@@ -18,7 +18,7 @@
         <a class="nav-item" href="log_food.html"><span>+</span>Log food</a>
         <a class="nav-item" href="progress.html"><span>O</span>Progress</a>
         <a class="nav-item" href="recipes.html"><span>=</span>Recipes</a>
-        <a class="nav-item" href="social.html"><span>@</span>Friends</a>
+        <a class="nav-item" href="social.html"><span>@</span>Friends</a><a class="nav-item" href="trainers.html"><span>T</span>Find a Trainer</a>
         <a class="nav-item active" href="settings.html"><span>⚙</span>Settings</a>
       <button class="nav-item nav-menu-button" type="button" data-mobile-menu aria-label="Open menu" aria-expanded="false"><span class="mobile-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span>Menu</span></button></nav>
     </aside>
@@ -31,7 +31,7 @@
           <p class="eyebrow">Settings</p>
           <div class="settings-subnav">
             <button class="active" type="button" data-settings-tab="account">Settings</button>
-            <button type="button" data-settings-tab="feedback">Send feedback</button>
+            <button type="button" data-settings-tab="trainer">Trainer profile</button><button type="button" data-settings-tab="feedback">Send feedback</button>
             <button type="button" data-settings-tab="privacy">Privacy</button>
           </div>
         </aside>
@@ -63,6 +63,7 @@
             <small class="page-copy">MyFitnessPal currently exports nutrition, progress, and exercise data as separate CSV files inside a ZIP. Choose the <strong>Your Nutrition</strong> CSV when importing meal history.</small>
           </div>
         </section>
+        <section class="panel settings-section" data-trainer-profile-settings hidden></section>
         <section class="panel settings-section" data-settings-section="privacy" hidden>
           <div class="panel-header"><div><p class="eyebrow">Privacy & data</p><h2>Privacy settings</h2><p class="page-copy">MacroSync only uses the information needed to operate your account and apply age-appropriate content rules.</p></div></div>
           <label class="toggle-row"><input type="checkbox" data-email-search-enabled><span><strong>Allow people to find me by email</strong><small>Turn this off to remove your email from friend search. Your display name can still be searched.</small></span></label>

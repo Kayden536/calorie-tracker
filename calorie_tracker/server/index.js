@@ -184,13 +184,14 @@ async function fetchOpenFoodFacts(url, options = {}, attempts = 3) {
   throw lastError || new Error("Open Food Facts request failed.");
 }
 
-async function searchOpenFoodFacts(query) {
+async function searchOpenFoodFacts(query, page = 1, pageSize = 15) {
   const url = new URL(`${OPEN_FOOD_FACTS_BASE}/cgi/search.pl`);
   url.searchParams.set('search_terms', query);
   url.searchParams.set('search_simple', '1');
   url.searchParams.set('action', 'process');
   url.searchParams.set('json', '1');
-  url.searchParams.set('page_size', '12');
+  url.searchParams.set('page_size', String(pageSize));
+  url.searchParams.set('page', String(page));
   url.searchParams.set('fields', 'code,product_name,brands,nutriments,serving_size,serving_quantity,product_quantity,quantity');
 
   const response = await fetchOpenFoodFacts(url);
@@ -216,7 +217,7 @@ async function searchOpenFoodFacts(query) {
     };
   }).filter(food => food.name && food.nutritionVerification.verified);
 
-  return { foods, totalHits: Number(data.count) || foods.length, available: true };
+  return { foods, totalHits: Number(data.count) || foods.length, available: true, page, pageSize, totalPages: Math.max(1, Math.ceil((Number(data.count) || foods.length) / pageSize)) };
 }
 
 let cnfFoodIndexCache = { loadedAt: 0, foods: [] };
@@ -283,11 +284,13 @@ async function fetchCnfFood(food) {
   };
 }
 
-async function searchCanadianNutrientFile(query) {
+async function searchCanadianNutrientFile(query, page = 1, pageSize = 15) {
   const index = await loadCnfFoodIndex();
-  const candidates = rankTextMatches(query, index, 8);
-  const foods = (await Promise.all(candidates.map(fetchCnfFood))).filter(Boolean);
-  return { foods, totalHits: candidates.length, configured: true };
+  const candidates = rankTextMatches(query, index, 200);
+  const start = (page - 1) * pageSize;
+  const pageCandidates = candidates.slice(start, start + pageSize);
+  const foods = (await Promise.all(pageCandidates.map(fetchCnfFood))).filter(Boolean);
+  return { foods, totalHits: candidates.length, configured: true, page, pageSize, totalPages: Math.max(1, Math.ceil(candidates.length / pageSize)) };
 }
 
 let cofidCache = { loadedAt: 0, foods: [] };
@@ -321,10 +324,10 @@ function loadCofidLocal() {
   return cofidCache.foods;
 }
 
-async function searchCofid(query) {
+async function searchCofid(query, page = 1, pageSize = 15) {
   if (COFID_API_BASE) {
     const url = new URL(COFID_API_BASE);
-    url.searchParams.set('q', query); url.searchParams.set('limit', '12');
+    url.searchParams.set('q', query); url.searchParams.set('limit', String(pageSize)); url.searchParams.set('page', String(page));
     const response = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'MacroSync/0.1' } });
     if (!response.ok) throw new Error(`CoFID API returned HTTP ${response.status}.`);
     const data = await response.json();
@@ -333,10 +336,12 @@ async function searchCofid(query) {
       const nutrients = { calories:Number(row.calories ?? row.energy_kcal ?? 0), protein:Number(row.protein ?? 0), carbs:Number(row.carbs ?? row.carbohydrate ?? 0), fat:Number(row.fat ?? 0), fiber:Number(row.fiber ?? row.fibre ?? 0), sugar:Number(row.sugar ?? row.sugars ?? 0), sodium:Number(row.sodium ?? 0) };
       return { id:String(row.id ?? row.food_code ?? row.code ?? ''), name:row.name ?? row.food_name ?? row.food_description ?? 'Unknown food', brand:row.brand || '', dataType:'UK CoFID', servingSize:100, servingUnit:'g', householdServing:'', nutrients, extraNutrients:row.extraNutrients || {}, source:'cofid', nutritionVerification:verifyNutrition(nutrients) };
     }).filter(food=>food.nutritionVerification.verified);
-    return { foods, totalHits: foods.length, configured:true };
+    return { foods, totalHits: foods.length, configured:true, page, pageSize, totalPages: Math.max(1, Math.ceil(foods.length / pageSize)) };
   }
-  const foods = rankTextMatches(query, loadCofidLocal(), 12);
-  return { foods, totalHits: foods.length, configured: cofidConfigured() };
+  const allFoods = rankTextMatches(query, loadCofidLocal(), 200);
+  const start = (page - 1) * pageSize;
+  const foods = allFoods.slice(start, start + pageSize);
+  return { foods, totalHits: allFoods.length, configured: cofidConfigured(), page, pageSize, totalPages: Math.max(1, Math.ceil(allFoods.length / pageSize)) };
 }
 
 function buildCrossSourceComparison(sources) {
@@ -369,14 +374,17 @@ app.get("/api/health", (_req, res) => {
 
 app.get("/api/foods/search", rateLimit(60, 60_000), async (req, res) => {
   const query = String(req.query.q || "").trim();
-  if (query.length < 2) return res.json({ foods: [], totalHits: 0 });
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const pageSize = Math.min(15, Math.max(1, Number(req.query.pageSize) || 15));
+  if (query.length < 2) return res.json({ foods: [], totalHits: 0, page, pageSize, totalPages: 0 });
   if (!USDA_API_KEY) return res.status(500).json({ error: "USDA API key is not configured." });
 
   try {
     const url = new URL("https://api.nal.usda.gov/fdc/v1/foods/search");
     url.searchParams.set("api_key", USDA_API_KEY);
     url.searchParams.set("query", query);
-    url.searchParams.set("pageSize", "12");
+    url.searchParams.set("pageSize", String(pageSize));
+    url.searchParams.set("pageNumber", String(page));
 
     const logUrl = new URL(url);
     logUrl.searchParams.set("api_key", "REDACTED");
@@ -417,7 +425,7 @@ app.get("/api/foods/search", rateLimit(60, 60_000), async (req, res) => {
       };
     }).filter(food => food.nutritionVerification.verified) : [];
 
-    res.json({ foods, totalHits: Number(data.totalHits) || 0, verification: { rejectedInvalidRecords: (Array.isArray(data.foods) ? data.foods.length : 0) - foods.length } });
+    res.json({ foods, totalHits: Number(data.totalHits) || 0, page, pageSize, totalPages: Math.max(1, Math.ceil((Number(data.totalHits) || 0) / pageSize)), verification: { rejectedInvalidRecords: (Array.isArray(data.foods) ? data.foods.length : 0) - foods.length } });
   } catch (error) {
     console.error("USDA request failed:", error);
     res.status(502).json({ error: "Unable to reach the USDA food database right now." });
@@ -427,9 +435,11 @@ app.get("/api/foods/search", rateLimit(60, 60_000), async (req, res) => {
 
 app.get("/api/foods/search-openfoodfacts", rateLimit(45, 60_000), async (req, res) => {
   const query = String(req.query.q || '').trim();
-  if (query.length < 2) return res.json({ foods: [], totalHits: 0, available: true });
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const pageSize = Math.min(15, Math.max(1, Number(req.query.pageSize) || 15));
+  if (query.length < 2) return res.json({ foods: [], totalHits: 0, available: true, page, pageSize, totalPages: 0 });
   try {
-    const result = await searchOpenFoodFacts(query);
+    const result = await searchOpenFoodFacts(query, page, pageSize);
     res.json(result);
   } catch (error) {
     console.error('Open Food Facts request failed:', error);
@@ -457,15 +467,19 @@ app.get('/api/foods/details-usda/:id', rateLimit(45, 60_000), async (req, res) =
 
 app.get('/api/foods/search-cnf', rateLimit(45, 60_000), async (req, res) => {
   const query = String(req.query.q || '').trim();
-  if (query.length < 2) return res.json({ foods: [], totalHits: 0, configured: true });
-  try { res.json(await searchCanadianNutrientFile(query)); }
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const pageSize = Math.min(15, Math.max(1, Number(req.query.pageSize) || 15));
+  if (query.length < 2) return res.json({ foods: [], totalHits: 0, configured: true, page, pageSize, totalPages: 0 });
+  try { res.json(await searchCanadianNutrientFile(query, page, pageSize)); }
   catch (error) { console.error('CNF request failed:', error); res.status(502).json({ error: 'Unable to reach the Canadian Nutrient File right now.' }); }
 });
 
 app.get('/api/foods/search-cofid', rateLimit(30, 60_000), async (req, res) => {
   const query = String(req.query.q || '').trim();
-  if (query.length < 2) return res.json({ foods: [], totalHits: 0, configured: cofidConfigured() });
-  try { res.json(await searchCofid(query)); }
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const pageSize = Math.min(15, Math.max(1, Number(req.query.pageSize) || 15));
+  if (query.length < 2) return res.json({ foods: [], totalHits: 0, configured: cofidConfigured(), page, pageSize, totalPages: 0 });
+  try { res.json(await searchCofid(query, page, pageSize)); }
   catch (error) { console.error('CoFID request failed:', error); res.status(502).json({ error: 'Unable to reach the configured CoFID source right now.' }); }
 });
 
