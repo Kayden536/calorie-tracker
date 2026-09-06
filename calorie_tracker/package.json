@@ -1,16 +1,12 @@
-{
-  "name": "pulseplate-alpha",
-  "version": "0.1.0",
-  "private": true,
-  "description": "PulsePlate alpha web application",
-  "type": "module",
-  "scripts": {
-    "start": "node server/index.js",
-    "dev": "node --watch server/index.js"
-  },
-  "dependencies": {
-    "dotenv": "^17.2.1",
-    "express": "^5.1.0",
-    "@supabase/supabase-js": "^2.57.0"
-  }
-}
+PORT=3000
+SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+SUPABASE_PUBLISHABLE_KEY=YOUR_SUPABASE_PUBLISHABLE_KEY
+USDA_API_KEY=YOUR_DATA_GOV_API_KEY
+
+# Optional future/local food providers
+CNF_API_BASE_URL=https://food-nutrition.canada.ca/api/canadian-nutrient-file
+COFID_API_BASE_URL=
+COFID_DATA_PATH=server/data/cofid.json
+
+# Optional shared rate-limit store for multi-instance deployments (recommended when scaling horizontally)
+REDIS_URL=

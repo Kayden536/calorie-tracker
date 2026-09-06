@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="icon" type="image/png" sizes="192x192" href="assets/macrosync-favicon.png"><link rel="apple-touch-icon" href="assets/macrosync-favicon.png">
+  <title>MacroSync Progress</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="js/supabase-client.js" defer></script>
+  <script src="js/app.js" defer></script>
+</head>
+<body data-page="progress">
+<main class="app-shell">
+  <aside class="sidebar" aria-label="Primary navigation">
+    <a class="brand" href="index.html" aria-label="MacroSync home"><img class="brand-logo" src="assets/macrosync-logo-dark.png" data-theme-logo alt="MacroSync"></a>
+    <nav class="nav-list">
+      <a class="nav-item" href="index.html"><span>H</span>Dashboard</a><a class="nav-item" href="log_food.html"><span>+</span>Log food</a><a class="nav-item active" href="progress.html"><span>O</span>Progress</a><a class="nav-item" href="recipes.html"><span>=</span>Recipes</a><a class="nav-item" href="social.html"><span>@</span>Friends</a><a class="nav-item" href="trainers.html"><span>T</span>Find a Trainer</a><a class="nav-item" href="settings.html"><span>A</span>Settings</a>
+    <button class="nav-item nav-menu-button" type="button" data-mobile-menu aria-label="Open menu" aria-expanded="false"><span class="mobile-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span>Menu</span></button></nav>
+  </aside>
+  <section class="workspace">
+    <header class="topbar"><div><p class="eyebrow">Your progress</p><h1>Progress</h1><p class="page-copy">Track your weight, logging streak, and personal measurements over time.</p></div></header>
+
+    <section class="summary-grid">
+      <article class="goal-card"><p class="eyebrow">Current weight</p><div class="stat-number" data-current-progress-weight>—</div><p class="card-note" data-weight-change>Log a weight to start your history.</p></article>
+      <article class="goal-card"><p class="eyebrow">Logging streak</p><div class="stat-number"><span data-current-streak>0</span> days</div><p class="card-note">Consecutive days with food logged.</p></article>
+      <article class="goal-card"><p class="eyebrow">Longest streak</p><div class="stat-number"><span data-longest-streak>0</span> days</div><p class="card-note">Your best logging streak so far.</p></article>
+      <article class="goal-card"><p class="eyebrow">Days logged</p><div class="stat-number"><span data-days-logged>0</span></div><p class="card-note">Unique days with food entries.</p></article>
+    </section>
+
+    <section class="panel progress-panel"><div class="panel-header"><div><p class="eyebrow">Weight</p><h2>Weight progress</h2></div><button class="primary-button" type="button" data-add-weight>Log weight</button></div><div class="progress-chart" data-weight-chart><p class="page-copy">No weight history yet. Log your first weight above.</p></div><div class="weight-summary-row"><span><strong data-start-weight>—</strong><small>Starting</small></span><span><strong data-weight-change-total>—</strong><small>Change</small></span><span><strong data-lowest-weight>—</strong><small>Lowest</small></span></div><div class="history-list" data-weight-history></div></section>
+
+    <section class="panel progress-panel"><div class="panel-header"><div><p class="eyebrow">Activity</p><h2>Recent logging</h2></div></div><div class="activity-grid" data-activity-grid></div></section>
+
+    <section class="panel progress-panel"><div class="panel-header"><div><p class="eyebrow">Measurements</p><h2>Body measurements</h2><p class="page-copy">Track personal measurements in inches or centimeters.</p></div><button class="primary-button" type="button" data-add-measurement>Add measurement</button></div><div class="measurement-list" data-measurement-list><p class="page-copy">No measurements logged yet.</p></div></section>
+  </section>
+  <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a class="active" href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><button class="mobile-menu-button" type="button" data-mobile-menu aria-label="Open menu" aria-expanded="false"><span class="mobile-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span>Menu</span></button></nav>
+</main>
+</body>
+</html>

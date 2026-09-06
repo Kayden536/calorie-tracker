@@ -123,3 +123,28 @@ See `FOOD-DATABASES.md` for the multi-database search and cross-reference design
 
 ## Food databases
 See `FOOD-DATABASES.md` for USDA, Health Canada CNF, UK CoFID, Open Food Facts, and cross-reference setup. CNF is live through its public API; CoFID is prepared for a future API or local normalized CSV.
+
+## Planned Paid Tiers
+
+MacroSync's future paid-tier plan is documented in `PAID-TIERS.md`. Payments and subscriptions are not implemented yet. All eight nutrition goals are intended to remain available to everyone; Premium is planned to add optional goal trend detection and one-click macro-adjustment automation rather than locking the goals themselves behind a paywall.
+
+### Future paid-tier messaging
+Normal user-to-user messaging is planned to remain available to Free users with a limited monthly allowance. Basic+ would receive a larger allowance, while Premium would receive the highest allowance and may eventually have unlimited messaging if storage and abuse controls support it. Payments and these limits are not implemented yet.
+
+## Scalability hardening (v43)
+
+This release adds a database/application hardening layer intended to keep the architecture efficient as MacroSync grows toward hundreds of thousands of accounts:
+
+- composite indexes for the main food-log, messaging, social, meal, recipe, moderation, and report access paths
+- PostgreSQL trigram indexes for the existing community/trainer/profile `%query%` searches
+- a `daily_nutrition_summaries` aggregate maintained by database triggers so progress/streak views do not rescan the complete food-entry history
+- `nutrition_goal_history` so future Premium trend/adjustment automation has an auditable history rather than repeatedly scanning raw logs
+- cursor-based conversation pagination with a bounded default of 50 messages instead of loading an entire conversation
+- Realtime message events instead of 3-second client polling; message bodies are not placed in the Realtime event payload
+- optional Redis-backed API rate limiting for horizontally scaled Express instances, with a bounded local fallback
+- an explicit operational-data cleanup function for scheduled retention jobs
+- fresh-install schema includes the hardening; existing installations should also run `supabase-scalability-hardening-migration.sql`
+
+The large `food_entries` table is intentionally not partitioned in this release. Its access paths are indexed and progress reads use daily aggregates, while partitioning remains a planned migration if raw-log volume eventually reaches a point where physical table size/maintenance becomes the next bottleneck.
+
+For multiple Express instances, configure `REDIS_URL` before scaling out so rate limits are shared between instances.

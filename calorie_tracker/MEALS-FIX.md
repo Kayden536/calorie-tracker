@@ -1,13 +1,13 @@
-# Meal system fix
+# UK CoFID provider
 
-This version starts from the known-working `calorie_tracker(1).zip` Render version.
+MacroSync includes a normalized local copy of the **McCance and Widdowson's Composition of Foods Integrated Dataset (CoFID) 2021** workbook supplied for this integration.
 
-The meal UI now loads meals directly from `public.meals` instead of depending on the `ensure_default_meals` RPC to return rows. If an account has no meal rows, the app creates Meal 1, Meal 2, and Meal 3 automatically under the user's RLS policy.
+- Source: official UK CoFID 2021 workbook
+- Records: 2,886 usable food records
+- Basis: per 100 g
+- Common nutrients: energy, protein, carbohydrate, fat, fibre, sugars, sodium
+- Additional nutrients: selected minerals, vitamins, and cholesterol are retained when available.
 
-The requested behavior remains:
-- Meal 1, Meal 2, Meal 3 by default
-- Rename any meal
-- Add meals up to Meal 10
-- Existing food entries are moved to the new name when a meal is renamed
+The normalized file is `server/data/cofid.json`. The original Excel workbook is intentionally not shipped with the application because the JSON is smaller and faster to search.
 
-If the existing Supabase database has not yet been migrated, run `supabase-meals-migration.sql` once in the Supabase SQL Editor.
+`COFID_API_BASE_URL` remains available as an optional override if an official future CoFID API is introduced.
