@@ -331,6 +331,7 @@ const PulsePlateApp = (() => {
         <div class="mobile-menu-sheet-content" data-mobile-menu-content>
           <a href="index.html">Dashboard</a>
           <a href="settings.html">Settings</a>
+          <a href="recipes.html">Recipes</a>
           <a href="goals.html">Goals</a>
           <a href="admin.html" data-admin-only hidden>Admin Moderation</a>
           <button type="button" data-notifications>Notifications <span class="menu-badge" data-menu-notification-count hidden>0</span></button>
@@ -1958,6 +1959,8 @@ const PulsePlateApp = (() => {
     const builder = $('[data-recipe-builder]');
     if (!list || !builder) return;
     await loadRecipes(list);
+    const personalSearch = builder.querySelector('[data-recipe-personal-search]');
+    const personalResults = builder.querySelector('[data-recipe-personal-results]');
     const communitySearch = builder.querySelector('[data-recipe-community-search]');
     const communityResults = builder.querySelector('[data-recipe-community-results]');
     const referenceSearch = builder.querySelector('[data-recipe-reference-search]');
@@ -1979,11 +1982,30 @@ const PulsePlateApp = (() => {
       const amount=Number(food.servingSize||100);
       const unit=food.servingUnit||'g';
       const defaultText = food.householdServing || `${moneyless(amount)} ${unit}`;
-      const raw=prompt(`How many ${unit} of ${food.name}?\nDefault serving: ${defaultText}`, amount);
+      const raw=prompt(`How many ${unit} of ${food.name}?\\nDefault serving: ${defaultText}`, amount);
       const qty=Number(raw);
       if(!Number.isFinite(qty)||qty<=0)return;
-      const factor=String(unit).toLowerCase().includes('g') ? qty/100 : qty*amount/100;
-      ingredients.push({name:food.name,amount:qty,unit,fdc_id:/^\d+$/.test(String(food.id))?Number(food.id):null,calories:Number(n.calories||0)*factor,protein:Number(n.protein||0)*factor,carbs:Number(n.carbs||0)*factor,fat:Number(n.fat||0)*factor,sourceLabel});
+
+      let factor;
+      if(food.source === 'personal'){
+        // Personal-food nutrition is stored for the creator's default serving,
+        // so scale by the number of default servings rather than treating it as /100g.
+        factor = qty / amount;
+      } else {
+        factor = String(unit).toLowerCase().includes('g') ? qty/100 : qty*amount/100;
+      }
+
+      ingredients.push({
+        name:food.name,
+        amount:qty,
+        unit,
+        fdc_id:/^\\d+$/.test(String(food.id))?Number(food.id):null,
+        calories:Number(n.calories||0)*factor,
+        protein:Number(n.protein||0)*factor,
+        carbs:Number(n.carbs||0)*factor,
+        fat:Number(n.fat||0)*factor,
+        sourceLabel
+      });
       drawIngredients();
     };
 
@@ -1995,6 +2017,38 @@ const PulsePlateApp = (() => {
     };
 
     drawIngredients();
+
+    let personalTimer;
+    personalSearch?.addEventListener('input',()=>{
+      clearTimeout(personalTimer);
+      personalTimer=setTimeout(async()=>{
+        const q=personalSearch.value.trim();
+        if(q.length<2){personalResults.innerHTML='';return;}
+        personalResults.innerHTML='<p class="page-copy">Searching your Personal Foods…</p>';
+        const {data,error}=await supabase.from('user_foods').select('*').eq('user_id',user.id).ilike('name',`%${q}%`).order('name').limit(20);
+        if(error){personalResults.innerHTML=`<p class="page-copy">${escapeHtml(error.message)}</p>`;return;}
+        const foods=(data||[]).map(f=>({
+          id:`personal-${f.id}`,
+          name:f.name,
+          brand:'My Personal Foods',
+          dataType:'Personal Food',
+          servingSize:Number(f.serving_amount||1),
+          servingUnit:f.serving_unit||'serving',
+          householdServing:`${moneyless(Number(f.serving_amount||1))} ${f.serving_unit||'serving'}`,
+          nutrients:{
+            calories:Number(f.calories||0),
+            protein:Number(f.protein||0),
+            carbs:Number(f.carbs||0),
+            fat:Number(f.fat||0)
+          },
+          source:'personal',
+          sourceLabel:'Personal Food',
+          personalServingAmount:Number(f.serving_amount||1),
+          personalServingUnit:f.serving_unit||'serving'
+        }));
+        renderFoodResults(personalResults,foods,'No matching Personal Foods found.');
+      },300);
+    });
 
     let communityTimer;
     communitySearch?.addEventListener('input',()=>{
