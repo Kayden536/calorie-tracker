@@ -69,18 +69,21 @@ alter table public.food_entries enable row level security;
 create table if not exists public.meals (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
+  meal_date date not null default current_date,
   meal_number integer not null check (meal_number between 1 and 10),
   name text not null check (char_length(trim(name)) between 1 and 40),
   sort_order integer not null,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique(user_id, meal_number)
+  updated_at timestamptz not null default now()
 );
 
-create unique index if not exists meals_user_name_unique
-  on public.meals(user_id, lower(trim(name)));
-create index if not exists meals_user_order_idx
-  on public.meals(user_id, meal_number);
+-- Meal slots and names are unique per user and calendar day.
+create unique index if not exists meals_user_date_number_unique
+  on public.meals(user_id, meal_date, meal_number);
+create unique index if not exists meals_user_date_name_unique
+  on public.meals(user_id, meal_date, lower(trim(name)));
+create index if not exists meals_user_date_order_idx
+  on public.meals(user_id, meal_date, meal_number);
 
 alter table public.meals enable row level security;
 drop policy if exists "meals own rows" on public.meals;
@@ -91,11 +94,11 @@ create policy "meals insert own rows" on public.meals for insert to authenticate
 create policy "meals update own rows" on public.meals for update to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 -- Convert the original fixed meal labels to the new numbered defaults.
-insert into public.meals(user_id, meal_number, name, sort_order)
-select p.id, n, 'Meal ' || n, n
+insert into public.meals(user_id, meal_date, meal_number, name, sort_order)
+select p.id, current_date, n, 'Meal ' || n, n
 from public.profiles p
 cross join generate_series(1,3) as gs(n)
-on conflict (user_id, meal_number) do nothing;
+on conflict (user_id, meal_date, meal_number) do nothing;
 
 update public.food_entries
 set meal = case lower(trim(meal))
@@ -109,33 +112,36 @@ end
 where lower(trim(meal)) in ('breakfast','lunch','dinner','snack','meal');
 
 -- Legacy Snack entries become Meal 4, so create that meal only when needed.
-insert into public.meals(user_id, meal_number, name)
-select distinct fe.user_id, 4, 'Meal 4'
+insert into public.meals(user_id, meal_date, meal_number, name, sort_order)
+select distinct fe.user_id, fe.logged_date, 4, 'Meal 4', 4
 from public.food_entries fe
 where fe.meal = 'Meal 4'
-on conflict (user_id, meal_number) do nothing;
+on conflict (user_id, meal_date, meal_number) do nothing;
 
 alter table public.food_entries alter column meal set default 'Meal 1';
 
-create or replace function public.ensure_default_meals()
+create or replace function public.ensure_default_meals(p_meal_date date default current_date)
 returns setof public.meals
-language plpgsql
-security definer
-set search_path = public
+language plpgsql security definer set search_path = public
 as $$
 begin
   if auth.uid() is null then
     raise exception 'You must be signed in.';
   end if;
-  insert into public.meals(user_id, meal_number, name)
-  select auth.uid(), n, 'Meal ' || n
+  insert into public.meals(user_id, meal_date, meal_number, name, sort_order)
+  select auth.uid(), p_meal_date, n, 'Meal ' || n, n
   from generate_series(1,3) gs(n)
-  on conflict (user_id, meal_number) do nothing;
+  where not exists (
+    select 1 from public.meals m
+    where m.user_id = auth.uid() and m.meal_date = p_meal_date and m.meal_number = n
+  );
   return query
-    select * from public.meals where user_id = auth.uid() order by meal_number;
+    select * from public.meals
+    where user_id = auth.uid() and meal_date = p_meal_date
+    order by meal_number;
 end;
 $$;
-grant execute on function public.ensure_default_meals() to authenticated;
+grant execute on function public.ensure_default_meals(date) to authenticated;
 
 drop function if exists public.add_meal(text, uuid);
 
@@ -153,12 +159,12 @@ begin
   if auth.uid() is null then raise exception 'You must be signed in.'; end if;
   select min(n) into next_number
   from generate_series(1,10) gs(n)
-  where not exists (select 1 from public.meals m where m.user_id = auth.uid() and m.meal_number = n);
+  where not exists (select 1 from public.meals m where m.user_id = auth.uid() and m.meal_date = current_date and m.meal_number = n);
   if next_number is null then raise exception 'You can have up to 10 meals.'; end if;
   if clean_name is null then clean_name := 'Meal ' || next_number; end if;
   if char_length(clean_name) > 40 then raise exception 'Meal names must be 40 characters or fewer.'; end if;
-  if exists (select 1 from public.meals m where m.user_id = auth.uid() and lower(trim(m.name)) = lower(clean_name)) then raise exception 'You already have a meal with that name.'; end if;
-  insert into public.meals(user_id, meal_number, name, sort_order) values(auth.uid(), next_number, clean_name, next_number) returning * into meal_row;
+  if exists (select 1 from public.meals m where m.user_id = auth.uid() and m.meal_date = current_date and lower(trim(m.name)) = lower(clean_name)) then raise exception 'You already have a meal with that name.'; end if;
+  insert into public.meals(user_id, meal_date, meal_number, name, sort_order) values(auth.uid(), current_date, next_number, clean_name, next_number) returning * into meal_row;
   return meal_row;
 end;
 $$;
@@ -180,12 +186,12 @@ begin
   if auth.uid() is null then raise exception 'You must be signed in.'; end if;
   if clean_name is null then raise exception 'Meal name cannot be empty.'; end if;
   if char_length(clean_name) > 40 then raise exception 'Meal names must be 40 characters or fewer.'; end if;
-  select * into meal_row from public.meals where id = p_meal_id and user_id = auth.uid() for update;
+  select * into meal_row from public.meals where id = p_meal_id and user_id = auth.uid() and meal_date = current_date for update;
   if meal_row.id is null then raise exception 'Meal not found.'; end if;
-  if exists (select 1 from public.meals m where m.user_id = auth.uid() and m.id <> p_meal_id and lower(trim(m.name)) = lower(clean_name)) then raise exception 'You already have a meal with that name.'; end if;
+  if exists (select 1 from public.meals m where m.user_id = auth.uid() and m.meal_date = current_date and m.id <> p_meal_id and lower(trim(m.name)) = lower(clean_name)) then raise exception 'You already have a meal with that name.'; end if;
   old_name := meal_row.name;
-  update public.food_entries set meal = clean_name where user_id = auth.uid() and meal = old_name;
-  update public.meals set name = clean_name where id = p_meal_id and user_id = auth.uid() returning * into meal_row;
+  update public.food_entries set meal = clean_name where user_id = auth.uid() and logged_date = current_date and meal = old_name;
+  update public.meals set name = clean_name where id = p_meal_id and user_id = auth.uid() and meal_date = current_date returning * into meal_row;
   return meal_row;
 end;
 $$;
@@ -441,6 +447,9 @@ create table if not exists public.user_foods (
   name text not null,
   serving_amount numeric not null default 1 check (serving_amount > 0),
   serving_unit text not null default 'serving',
+  serving_grams numeric not null default 100 check (serving_grams > 0),
+  serving_options jsonb not null default '[]'::jsonb,
+  conversion_mode text not null default 'estimate' check (conversion_mode in ('none','estimate')),
   calories numeric not null default 0 check (calories >= 0),
   protein numeric not null default 0 check (protein >= 0),
   carbs numeric not null default 0 check (carbs >= 0),
@@ -736,6 +745,9 @@ create table if not exists public.community_foods (
 );
 create index if not exists community_foods_public_name_idx on public.community_foods(is_public, name);
 create index if not exists community_foods_user_idx on public.community_foods(user_id, created_at desc);
+alter table public.community_foods add column if not exists conversion_mode text not null default 'estimate';
+alter table public.community_foods drop constraint if exists community_foods_conversion_mode_check;
+alter table public.community_foods add constraint community_foods_conversion_mode_check check (conversion_mode in ('none','estimate'));
 alter table public.community_foods enable row level security;
 drop policy if exists "community foods public read" on public.community_foods;
 drop policy if exists "community foods own read" on public.community_foods;
@@ -1525,6 +1537,11 @@ grant execute on function public.send_message(uuid,text) to authenticated;
 
 -- Two-way food ownership: a food can be saved to My Foods and Community Foods
 -- in the same operation. The links are optional so existing food records remain valid.
+alter table public.user_foods add column if not exists serving_grams numeric not null default 100 check (serving_grams > 0);
+alter table public.user_foods add column if not exists serving_options jsonb not null default '[]'::jsonb;
+alter table public.user_foods add column if not exists conversion_mode text not null default 'estimate';
+alter table public.user_foods drop constraint if exists user_foods_conversion_mode_check;
+alter table public.user_foods add constraint user_foods_conversion_mode_check check (conversion_mode in ('none','estimate'));
 alter table public.user_foods add column if not exists community_food_id bigint references public.community_foods(id) on delete set null;
 alter table public.community_foods add column if not exists personal_food_id bigint references public.user_foods(id) on delete set null;
 alter table public.user_foods drop constraint if exists user_foods_source_check;
@@ -1532,82 +1549,40 @@ alter table public.user_foods add constraint user_foods_source_check check (sour
 create index if not exists user_foods_community_food_idx on public.user_foods(community_food_id);
 create index if not exists community_foods_personal_food_idx on public.community_foods(personal_food_id);
 
+drop function if exists public.create_food_records(text,numeric,numeric,numeric,numeric,numeric,text,numeric,boolean,boolean,numeric,numeric,numeric,numeric,text);
 create or replace function public.create_food_records(
-  p_name text,
-  p_calories_per_100g numeric,
-  p_protein_per_100g numeric,
-  p_carbs_per_100g numeric,
-  p_fat_per_100g numeric,
-  p_serving_amount numeric,
-  p_serving_unit text,
-  p_serving_grams numeric,
-  p_save_personal boolean default true,
-  p_publish_community boolean default true,
-  p_personal_calories numeric default null,
-  p_personal_protein numeric default null,
-  p_personal_carbs numeric default null,
-  p_personal_fat numeric default null,
-  p_personal_source text default 'manual'
+  p_name text, p_calories_per_100g numeric, p_protein_per_100g numeric, p_carbs_per_100g numeric, p_fat_per_100g numeric,
+  p_serving_amount numeric, p_serving_unit text, p_serving_grams numeric, p_save_personal boolean default true, p_publish_community boolean default true,
+  p_personal_calories numeric default null, p_personal_protein numeric default null, p_personal_carbs numeric default null, p_personal_fat numeric default null,
+  p_personal_source text default 'manual', p_serving_options jsonb default '[]'::jsonb, p_conversion_mode text default 'estimate'
 )
-returns jsonb
-language plpgsql
-security definer
-set search_path = public
-as $$
+returns jsonb language plpgsql security definer set search_path = public as $$
 declare
-  community_id bigint;
-  personal_id bigint;
-  personal_cal numeric;
-  personal_pro numeric;
-  personal_carb numeric;
-  personal_fat numeric;
-  clean_name text := nullif(trim(coalesce(p_name,'')), '');
-  unit text := nullif(trim(coalesce(p_serving_unit,'')), '');
+  community_id bigint; personal_id bigint; clean_name text := nullif(trim(coalesce(p_name,'')), ''); unit text := nullif(trim(coalesce(p_serving_unit,'')), ''); opts jsonb := coalesce(p_serving_options,'[]'::jsonb);
 begin
   if auth.uid() is null then raise exception 'You must be signed in.'; end if;
   if clean_name is null then raise exception 'Food name cannot be empty.'; end if;
-  if char_length(clean_name) > 120 then raise exception 'Food names must be 120 characters or fewer.'; end if;
+  if char_length(clean_name)>120 then raise exception 'Food names must be 120 characters or fewer.'; end if;
   if not p_save_personal and not p_publish_community then raise exception 'Choose at least one database.'; end if;
-  if coalesce(p_serving_grams,0) <= 0 or coalesce(p_serving_amount,0) <= 0 then raise exception 'Serving weight and serving amount must be positive.'; end if;
-  if p_calories_per_100g < 0 or p_protein_per_100g < 0 or p_carbs_per_100g < 0 or p_fat_per_100g < 0 then raise exception 'Nutrition values cannot be negative.'; end if;
-  if p_protein_per_100g + p_carbs_per_100g + p_fat_per_100g > 100.5 then raise exception 'The macros exceed 100 g per 100 g and cannot be saved.'; end if;
-  unit := coalesce(unit, 'serving');
-
-  personal_cal := coalesce(p_personal_calories, p_calories_per_100g * p_serving_grams / 100);
-  personal_pro := coalesce(p_personal_protein, p_protein_per_100g * p_serving_grams / 100);
-  personal_carb := coalesce(p_personal_carbs, p_carbs_per_100g * p_serving_grams / 100);
-  personal_fat := coalesce(p_personal_fat, p_fat_per_100g * p_serving_grams / 100);
-
+  if coalesce(p_serving_grams,0)<=0 or coalesce(p_serving_amount,0)<=0 then raise exception 'Default serving weight and amount must be positive.'; end if;
+  if p_conversion_mode not in ('none','estimate') then raise exception 'Invalid conversion mode.'; end if;
+  if jsonb_typeof(opts)<>'array' then raise exception 'Serving options must be an array.'; end if;
+  if p_calories_per_100g<0 or p_protein_per_100g<0 or p_carbs_per_100g<0 or p_fat_per_100g<0 then raise exception 'Nutrition values cannot be negative.'; end if;
+  if p_protein_per_100g+p_carbs_per_100g+p_fat_per_100g>100.5 then raise exception 'The macros exceed 100 g per 100 g and cannot be saved.'; end if;
+  unit:=coalesce(unit,'serving');
   if p_publish_community then
-    insert into public.community_foods(
-      user_id, name, calories_per_100g, protein_per_100g, carbs_per_100g,
-      fat_per_100g, serving_options, is_public
-    ) values (
-      auth.uid(), clean_name, p_calories_per_100g, p_protein_per_100g,
-      p_carbs_per_100g, p_fat_per_100g,
-      jsonb_build_array(jsonb_build_object('amount', p_serving_amount, 'unit', unit, 'grams', p_serving_grams)),
-      true
-    ) returning id into community_id;
+    insert into public.community_foods(user_id,name,calories_per_100g,protein_per_100g,carbs_per_100g,fat_per_100g,serving_options,conversion_mode,is_public)
+    values(auth.uid(),clean_name,p_calories_per_100g,p_protein_per_100g,p_carbs_per_100g,p_fat_per_100g,
+      jsonb_build_array(jsonb_build_object('amount',p_serving_amount,'unit',unit,'grams',p_serving_grams,'calories',coalesce(p_personal_calories,p_calories_per_100g*p_serving_grams/100),'protein',coalesce(p_personal_protein,p_protein_per_100g*p_serving_grams/100),'carbs',coalesce(p_personal_carbs,p_carbs_per_100g*p_serving_grams/100),'fat',coalesce(p_personal_fat,p_fat_per_100g*p_serving_grams/100))) || opts, p_conversion_mode, true) returning id into community_id;
   end if;
-
   if p_save_personal then
-    insert into public.user_foods(
-      user_id, name, serving_amount, serving_unit, calories, protein, carbs, fat,
-      source, community_food_id
-    ) values (
-      auth.uid(), clean_name, p_serving_amount, unit, personal_cal, personal_pro,
-      personal_carb, personal_fat, coalesce(nullif(p_personal_source,''), 'manual'), community_id
-    ) returning id into personal_id;
+    insert into public.user_foods(user_id,name,serving_amount,serving_unit,serving_grams,serving_options,conversion_mode,calories,protein,carbs,fat,source,community_food_id)
+    values(auth.uid(),clean_name,p_serving_amount,unit,p_serving_grams,opts,p_conversion_mode,coalesce(p_personal_calories,p_calories_per_100g*p_serving_grams/100),coalesce(p_personal_protein,p_protein_per_100g*p_serving_grams/100),coalesce(p_personal_carbs,p_carbs_per_100g*p_serving_grams/100),coalesce(p_personal_fat,p_fat_per_100g*p_serving_grams/100),coalesce(nullif(p_personal_source,''),'manual'),community_id) returning id into personal_id;
   end if;
-
-  if community_id is not null and personal_id is not null then
-    update public.community_foods set personal_food_id = personal_id where id = community_id;
-  end if;
-
-  return jsonb_build_object('community_food_id', community_id, 'personal_food_id', personal_id);
-end;
-$$;
-grant execute on function public.create_food_records(text,numeric,numeric,numeric,numeric,numeric,text,numeric,boolean,boolean,numeric,numeric,numeric,numeric,text) to authenticated;
+  if community_id is not null and personal_id is not null then update public.community_foods set personal_food_id=personal_id where id=community_id; end if;
+  return jsonb_build_object('community_food_id',community_id,'personal_food_id',personal_id);
+end; $$;
+grant execute on function public.create_food_records(text,numeric,numeric,numeric,numeric,numeric,text,numeric,boolean,boolean,numeric,numeric,numeric,numeric,text,jsonb,text) to authenticated;
 
 
 -- ================================================================
@@ -1826,3 +1801,101 @@ create policy "food entries own rows" on public.food_entries for select to authe
   ))
 );
 
+
+-- MacroSync: daily meal configuration. Meal slots belong to a specific date,
+-- so changing today's 3-10 meals never changes another day's meal configuration.
+alter table public.meals add column if not exists meal_date date;
+update public.meals set meal_date = current_date where meal_date is null;
+alter table public.meals alter column meal_date set default current_date;
+alter table public.meals alter column meal_date set not null;
+alter table public.meals drop constraint if exists meals_user_meal_number_key;
+drop index if exists meals_user_order_idx;
+drop index if exists meals_user_name_unique;
+create unique index if not exists meals_user_date_number_unique on public.meals(user_id, meal_date, meal_number);
+create unique index if not exists meals_user_date_name_unique on public.meals(user_id, meal_date, lower(trim(name)));
+create index if not exists meals_user_date_order_idx on public.meals(user_id, meal_date, meal_number);
+
+
+-- MacroSync trainer directory/profile foundation.
+-- Compact, structured fields keep storage and search costs low.
+create table if not exists public.trainer_profiles (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  bio text,
+  location text,
+  phone text,
+  instagram text,
+  facebook text,
+  tiktok text,
+  youtube text,
+  website text,
+  training_types smallint[] not null default '{}',
+  price_range smallint,
+  years_experience smallint,
+  is_public boolean not null default false,
+  updated_at timestamptz not null default now(),
+  constraint trainer_bio_length check (bio is null or char_length(bio) <= 5000),
+  constraint trainer_bio_word_limit check (bio is null or char_length(trim(bio)) = 0 or cardinality(regexp_split_to_array(trim(bio), '\s+')) <= 250),
+  constraint trainer_location_length check (location is null or char_length(location) <= 160),
+  constraint trainer_phone_length check (phone is null or char_length(phone) <= 32),
+  constraint trainer_years_experience check (years_experience is null or years_experience between 0 and 100),
+  constraint trainer_price_range check (price_range is null or price_range between 1 and 6),
+  constraint trainer_training_types_count check (cardinality(training_types) <= 12)
+);
+
+alter table public.trainer_profiles enable row level security;
+drop policy if exists "trainer profiles own read" on public.trainer_profiles;
+drop policy if exists "trainer profiles own insert" on public.trainer_profiles;
+drop policy if exists "trainer profiles own update" on public.trainer_profiles;
+drop policy if exists "trainer profiles own delete" on public.trainer_profiles;
+drop policy if exists "trainer profiles public read" on public.trainer_profiles;
+create policy "trainer profiles own read" on public.trainer_profiles for select to authenticated using (auth.uid() = user_id);
+create policy "trainer profiles own insert" on public.trainer_profiles for insert to authenticated with check (auth.uid() = user_id and exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'trainer'));
+create policy "trainer profiles own update" on public.trainer_profiles for update to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id and exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'trainer'));
+create policy "trainer profiles own delete" on public.trainer_profiles for delete to authenticated using (auth.uid() = user_id);
+create policy "trainer profiles public read" on public.trainer_profiles for select to authenticated using (is_public = true and not public.is_limited_minor());
+
+create index if not exists trainer_profiles_public_location_idx on public.trainer_profiles(is_public, location) where is_public = true;
+
+create or replace function public.search_trainers(p_query text default '', p_training_type smallint default null, p_price_range smallint default null)
+returns table(user_id uuid, display_name text, business_name text, bio text, location text, phone text, instagram text, facebook text, tiktok text, youtube text, website text, training_types smallint[], price_range smallint, years_experience smallint)
+language sql stable security definer set search_path=public as $$
+  select tp.user_id, p.display_name, p.business_name, tp.bio, tp.location, tp.phone, tp.instagram, tp.facebook, tp.tiktok, tp.youtube, tp.website, tp.training_types, tp.price_range, tp.years_experience
+  from public.trainer_profiles tp
+  join public.profiles p on p.id = tp.user_id
+  where tp.is_public = true
+    and p.role = 'trainer'
+    and not public.is_limited_minor()
+    and (trim(coalesce(p_query,'')) = '' or p.display_name ilike '%' || trim(p_query) || '%' or coalesce(p.business_name,'') ilike '%' || trim(p_query) || '%' or coalesce(tp.location,'') ilike '%' || trim(p_query) || '%' or coalesce(tp.bio,'') ilike '%' || trim(p_query) || '%')
+    and (p_training_type is null or p_training_type = any(tp.training_types))
+    and (p_price_range is null or tp.price_range = p_price_range)
+  order by p.display_name
+  limit 100;
+$$;
+grant execute on function public.search_trainers(text,smallint,smallint) to authenticated;
+
+create or replace function public.get_trainer_profile(p_trainer_id uuid)
+returns table(user_id uuid, display_name text, business_name text, bio text, location text, phone text, instagram text, facebook text, tiktok text, youtube text, website text, training_types smallint[], price_range smallint, years_experience smallint)
+language sql stable security definer set search_path=public as $$
+  select tp.user_id, p.display_name, p.business_name, tp.bio, tp.location, tp.phone, tp.instagram, tp.facebook, tp.tiktok, tp.youtube, tp.website, tp.training_types, tp.price_range, tp.years_experience
+  from public.trainer_profiles tp
+  join public.profiles p on p.id = tp.user_id
+  where tp.user_id = p_trainer_id and p.role = 'trainer' and (tp.is_public = true or tp.user_id = auth.uid());
+$$;
+grant execute on function public.get_trainer_profile(uuid) to authenticated;
+
+-- Trainer directory connection helper.
+create or replace function public.request_trainer_connection(p_trainer_id uuid)
+returns public.friend_connections
+language plpgsql security definer set search_path=public as $$
+declare r public.friend_connections;
+begin
+  if auth.uid() is null then raise exception 'You must be signed in.'; end if;
+  if exists (select 1 from public.profiles where id=auth.uid() and role='trainer') then raise exception 'Trainer accounts cannot send trainer-directory requests.'; end if;
+  if not exists (select 1 from public.trainer_profiles tp join public.profiles p on p.id=tp.user_id where tp.user_id=p_trainer_id and tp.is_public=true and p.role='trainer') then raise exception 'That trainer is not currently listed.'; end if;
+  insert into public.friend_connections(requester_id,addressee_id,status) values(auth.uid(),p_trainer_id,'pending') returning * into r;
+  return r;
+exception when unique_violation then raise exception 'A connection request already exists.';
+end;
+$$;
+revoke all on function public.request_trainer_connection(uuid) from public;
+grant execute on function public.request_trainer_connection(uuid) to authenticated;

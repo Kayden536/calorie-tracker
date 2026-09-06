@@ -11,8 +11,7 @@ create table if not exists public.meals (
   name text not null check (char_length(trim(name)) between 1 and 40),
   sort_order integer not null,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique(user_id, meal_number)
+  updated_at timestamptz not null default now()
 );
 
 -- If the table already exists from an earlier meal migration, make sure the
@@ -27,8 +26,10 @@ where sort_order is null;
 alter table public.meals alter column sort_order set default 1;
 alter table public.meals alter column sort_order set not null;
 
-create unique index if not exists meals_user_name_unique
-  on public.meals(user_id, lower(trim(name)));
+-- Meal-name uniqueness is date-scoped by supabase-meals-per-day-migration.sql.
+-- Remove any legacy user-wide name index before the date-scoped migration runs.
+drop index if exists public.meals_user_name_unique;
+drop index if exists public.meals_user_id_name_unique;
 create index if not exists meals_user_order_idx
   on public.meals(user_id, sort_order);
 
@@ -308,3 +309,55 @@ begin
 end;
 $$;
 grant execute on function public.create_food_records(text,numeric,numeric,numeric,numeric,numeric,text,numeric,boolean,boolean,numeric,numeric,numeric,numeric,text) to authenticated;
+
+-- Allow users to remove optional meals while always retaining at least three.
+-- A meal must be empty for the current user before it can be deleted; this
+-- prevents silently orphaning food entries that store the meal name as text.
+drop function if exists public.delete_meal(uuid);
+create function public.delete_meal(p_meal_id uuid)
+returns public.meals
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  meal_row public.meals;
+  remaining_count integer;
+  logged_count integer;
+begin
+  if auth.uid() is null then
+    raise exception 'You must be signed in.';
+  end if;
+
+  select count(*) into remaining_count
+  from public.meals
+  where user_id = auth.uid();
+
+  if remaining_count <= 3 then
+    raise exception 'MacroSync requires at least 3 meals.';
+  end if;
+
+  select * into meal_row
+  from public.meals
+  where id = p_meal_id and user_id = auth.uid()
+  for update;
+
+  if meal_row.id is null then
+    raise exception 'Meal not found.';
+  end if;
+
+  select count(*) into logged_count
+  from public.food_entries
+  where user_id = auth.uid() and meal = meal_row.name;
+
+  if logged_count > 0 then
+    raise exception 'Move or delete the foods logged under this meal before deleting it.';
+  end if;
+
+  delete from public.meals
+  where id = p_meal_id and user_id = auth.uid();
+
+  return meal_row;
+end;
+$$;
+grant execute on function public.delete_meal(uuid) to authenticated;
