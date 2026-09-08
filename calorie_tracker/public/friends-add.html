@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="icon" type="image/png" sizes="192x192" href="assets/macrosync-favicon.png"><link rel="apple-touch-icon" href="assets/macrosync-favicon.png">
+    <title>MacroSync Add Friends</title>
+    <link rel="stylesheet" href="css/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="js/supabase-client.js" defer></script>
+    <script src="js/app.js" defer></script>
+  </head>
+  <body data-page="friends-add">
+    <main class="app-shell">
+      <aside class="sidebar" aria-label="Primary navigation">
+  <a class="brand" href="index.html" aria-label="MacroSync home"><img class="brand-logo" src="assets/macrosync-logo-dark.png" data-theme-logo alt="MacroSync"></a>
+  <nav class="nav-list">
+    <a class="nav-item" href="index.html"><span>H</span>Dashboard</a>
+    <a class="nav-item" href="log_food.html"><span>+</span>Log food</a>
+    <a class="nav-item" href="progress.html"><span>O</span>Progress</a>
+    <a class="nav-item" href="recipes.html"><span>=</span>Recipes</a>
+    <a class="nav-item active" href="social.html"><span>@</span>Friends</a><a class="nav-item" href="trainers.html"><span>T</span>Find a Trainer</a>
+    <a class="nav-item" href="settings.html"><span>A</span>Settings</a>
+    <button class="nav-item nav-menu-button" type="button" data-mobile-menu aria-label="Open menu" aria-expanded="false"><span class="mobile-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span>Menu</span></button>
+  </nav>
+</aside>
+      <section class="workspace">
+        <header class="topbar">
+          <div><p class="eyebrow">Friends and sharing</p><h1>Add new friends</h1><p class="page-copy">Connect with friends, message them, and view shared nutrition data.</p></div>
+        </header>
+        <nav class="friends-subnav" aria-label="Friends sections">
+  <a href="social.html" data-friends-tab="home">Friends</a>
+  <a href="friends-add.html" data-friends-tab="add">Add friends</a>
+  <a href="friends-messages.html" data-friends-tab="messages">Messages</a>
+  <a href="friends-meals.html" data-friends-tab="meals">Shared meals</a>
+</nav>
+        <section class="panel"><div class="panel-header"><div><p class="eyebrow">Friend requests</p><h2>Pending requests</h2><p class="page-copy">Incoming requests can be accepted or rejected. Requests expire after 7 days.</p></div></div><div class="friend-request-list" data-friend-requests><p class="page-copy">Loading requests…</p></div></section>
+        <section class="panel social-discovery">
+  <div class="panel-header"><div><p class="eyebrow">Discover</p><h2>Find people on MacroSync</h2><p class="page-copy">Search by display name or email, then send a friend request.</p></div></div>
+  <div class="field"><label for="friendSearch">Search friends</label><input id="friendSearch" data-friend-search type="search" placeholder="Search by name or email" autocomplete="off" /></div>
+  <div class="people-list" data-people-list></div>
+</section>
+      </section>
+      <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a class="active" href="social.html"><span>@</span>Friends</a><button class="mobile-menu-button" type="button" data-mobile-menu aria-label="Open menu" aria-expanded="false"><span class="mobile-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span>Menu</span></button></nav>
+    </main>
+  </body>
+</html>
