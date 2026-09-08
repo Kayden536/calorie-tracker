@@ -27,18 +27,21 @@
             <div class="stat-row"><span class="stat-tile"><strong data-current-weight>—</strong>Current weight</span><span class="stat-tile"><strong data-goal-weight>—</strong>Goal weight</span></div>
             <div class="field"><label for="currentWeight">Current weight</label><input id="currentWeight" type="number" min="0" max="1000" placeholder="Optional" /></div>
             <div class="field"><label for="goalWeight">Goal weight</label><input id="goalWeight" type="number" min="0" max="1000" placeholder="Optional" /></div>
-            <div class="field"><label for="primaryGoal">Primary goal</label><select id="primaryGoal"><option value="lose">Lose weight</option><option value="maintain">Maintain weight</option><option value="gain">Build muscle / gain weight</option><option value="health">General health</option><option value="other">Something else</option></select></div>
+            <div class="field"><label for="primaryGoal">Goal</label><select id="primaryGoal"><option value="lose_basic">Lose weight — basic</option><option value="lose_muscle">Lose weight + maintain muscle</option><option value="lose_gain_muscle">Lose fat + gain muscle</option><option value="gain_basic">Gain weight — basic</option><option value="gain_muscle_maintain_fat">Gain muscle + maintain body fat</option><option value="lean_bulk">Gain muscle + slow gain of body fat — lean bulk</option><option value="maintain">Maintain weight</option><option value="recomp">Maintain weight + lose body fat + gain muscle — recomp</option></select></div>
             <div class="field"><label for="calgoal">Daily calories</label><input id="calgoal" type="number" min="500" max="10000" value="2050" /></div>
-            <button class="primary-button" type="button">Update preview</button>
+            <button class="primary-button" type="button">Save goals</button><p class="goal-disclaimer">Note/Disclaimer: these are starting recommendations and eceryone may need adjustments depending on each indibiduals metabolism and activity levels. recommended adjustments are with each choice the recommendations are exactly that, recommendations. you may need a larger or smaller adjustments. if you have a trainer and they have you following a certain set of calories and macros, please follow their recommendations, especially if they seem to be working for youl.</p>
           </section>
           <section class="panel">
             <div class="panel-header"><div><p class="eyebrow">Preferences</p><h2>Daily targets</h2></div></div>
             <div class="onboarding-grid"><div class="field"><label for="proteinGoal">Protein (g)</label><input id="proteinGoal" type="number" min="0" max="1000"></div><div class="field"><label for="carbsGoal">Carbohydrates (g)</label><input id="carbsGoal" type="number" min="0" max="1500"></div><div class="field"><label for="fatGoal">Fat (g)</label><input id="fatGoal" type="number" min="0" max="500"></div></div>
             <div class="auto-macro-box">
-              <div><p class="eyebrow">Automatic targets</p><h3>Calculate macros from weight and goal</h3><p class="page-copy">Automatic macro calculation is not yet available. It is coming at a later date. This feature will calculate your targets from your weight and goal once it is released.</p></div>
-              <button class="ghost-button" type="button" data-auto-calculate disabled>Calculate targets</button>
+              <div><p class="eyebrow">Automatic targets</p><h3>Calculate starting targets</h3><p class="page-copy">Calculate starting calories and macros from current weight and the selected goal.</p></div>
+              <button class="ghost-button" type="button" data-auto-calculate>Calculate targets</button>
+              <label class="toggle-row low-carb-toggle" data-low-carb hidden><input type="checkbox"><span><strong>Low-carb recomp</strong><small>Use 40 g carbs and let fat fill the remaining calories.</small></span></label>
               <p class="settings-status" data-auto-macro-status role="status"></p>
             </div>
+            <div class="goal-details" data-goal-details></div>
+            <div class="macro-calorie-reference"><strong>Macro calorie reference</strong><span>Protein: 4 kcal/g · Carbohydrates: 4 kcal/g · Fat: 9 kcal/g</span></div>
             <p class="page-copy">Your targets are used throughout the dashboard and food diary. You can update them whenever your goals change.</p>
           </section>
         </section>

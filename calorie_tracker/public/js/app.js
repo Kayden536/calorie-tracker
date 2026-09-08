@@ -1,3 +1,36 @@
+const MACROSYNC_VERSION = '0.56.0';
+let telemetryDisabled = false;
+let supabaseTelemetryClient = null;
+
+async function trackEvent(name, properties = {}) {
+  if (telemetryDisabled || !supabaseTelemetryClient) return;
+  try {
+    await supabaseTelemetryClient.rpc('log_app_event', {
+      p_event_name: String(name).slice(0, 80),
+      p_properties: { ...properties, app_version: MACROSYNC_VERSION }
+    });
+  } catch (error) { console.debug('Telemetry unavailable:', error?.message || error); }
+}
+
+async function reportClientError(error, context = {}) {
+  if (telemetryDisabled || !supabaseTelemetryClient) return;
+  try {
+    await supabaseTelemetryClient.rpc('log_client_error', {
+      p_page: location.pathname.slice(0, 200),
+      p_message: String(error?.message || error || 'Unknown client error').slice(0, 1000),
+      p_stack: String(error?.stack || '').slice(0, 4000),
+      p_context: { ...context, app_version: MACROSYNC_VERSION, user_agent: navigator.userAgent.slice(0, 500) }
+    });
+  } catch (reportError) { console.debug('Client error reporting unavailable:', reportError?.message || reportError); }
+}
+
+window.addEventListener('error', event => {
+  reportClientError(event.error || new Error(event.message || 'Unhandled browser error'), { source: 'window.error' });
+});
+window.addEventListener('unhandledrejection', event => {
+  reportClientError(event.reason || new Error('Unhandled promise rejection'), { source: 'unhandledrejection' });
+});
+
 const PulsePlateApp = (() => {
   let supabase;
   let user;
@@ -9,41 +42,33 @@ const PulsePlateApp = (() => {
   let selectedMealFriendId = null;
   let socialPeople = [];
   let socialConnections = [];
+  let socialCurrentProfile = null;
   let userMeals = [];
-  let messagePollTimer;
+  let messageRealtimeChannel;
+  let mealRealtimeChannel;
+  let conversationBeforeCursor = null;
+  let conversationHasOlder = false;
   const sharedMealCollapsed = new Set();
 
-  // Automatic macro calculation scaffold.
-  // When the final nutrition factors are decided, only these values need to be
-  // filled in for each goal. Leave them null to keep the current manual targets.
-  // Formula: calories = weight * caloriesPerLb; protein = weight * proteinPerLb;
-  // fat = weight * fatPerLb; carbs = (calories - protein*4 - fat*9) / 4.
-  const AUTO_MACRO_FACTORS = {
-    lose:     { caloriesPerLb: null, proteinPerLb: null, fatPerLb: null },
-    maintain: { caloriesPerLb: null, proteinPerLb: null, fatPerLb: null },
-    gain:     { caloriesPerLb: null, proteinPerLb: null, fatPerLb: null }
-  };
-
-  function calculateAutoMacroTargets(weight, goal) {
-    const factors = AUTO_MACRO_FACTORS[goal];
-    const w = Number(weight);
-    if (!factors || !Number.isFinite(w) || w <= 0) return null;
-    if (![factors.caloriesPerLb, factors.proteinPerLb, factors.fatPerLb].every(v => Number.isFinite(Number(v)))) return null;
-    const calories = w * Number(factors.caloriesPerLb);
-    const protein = w * Number(factors.proteinPerLb);
-    const fat = w * Number(factors.fatPerLb);
-    const carbs = Math.max((calories - protein * 4 - fat * 9) / 4, 0);
-    return {
-      calorie_goal: Math.round(calories),
-      protein_goal: Math.round(protein * 10) / 10,
-      fat_goal: Math.round(fat * 10) / 10,
-      carbs_goal: Math.round(carbs * 10) / 10
-    };
-  }
-
-  function autoMacroRulesConfigured(goal) {
-    const factors = AUTO_MACRO_FACTORS[goal];
-    return !!factors && [factors.caloriesPerLb, factors.proteinPerLb, factors.fatPerLb].every(v => Number.isFinite(Number(v)));
+  const GOAL_OPTIONS = [
+    { value:'lose_basic', label:'Lose weight — basic', caloriesPerLb:12, proteinPerLb:0.8, fat:55, adjustment:'If weight stalls or weight loss slows, decrease carbs by 30 g/day. Completely readjust every 10–20 lb lost. Switch to maintenance after no more than 3 months of weight-loss focus and stay in maintenance for at least 45 days.' },
+    { value:'lose_muscle', label:'Lose weight + maintain muscle', caloriesPerLb:12, proteinPerLb:1, fat:65, adjustment:'If weight stalls or weight loss slows, decrease carbs by 30 g/day. If muscle is starting to be lost, increase protein by 15 g/day. Completely readjust every 10–20 lb lost. Switch to maintenance after no more than 3 months of weight-loss focus and stay in maintenance for at least 45 days.' },
+    { value:'lose_gain_muscle', label:'Lose fat + gain muscle', caloriesPerLb:12, proteinPerLb:1.25, fat:65, adjustment:'If weight stalls or weight loss slows, decrease carbs by 30 g/day. If muscle is starting to be lost or muscle gains stall, increase protein by 20 g/day. Completely readjust every 10–20 lb lost. Switch to maintenance after no more than 3 months of weight-loss focus and stay in maintenance for at least 45 days.' },
+    { value:'gain_basic', label:'Gain weight — basic', caloriesPerLb:15, proteinPerLb:0.8, fat:65, adjustment:'If weight gain stalls or slows, increase carbs by 30 g/day. Completely readjust every 10–20 lb gained. Switch to maintenance after no more than 3 months of weight-gain focus and stay in maintenance for at least 45 days.' },
+    { value:'gain_muscle_maintain_fat', label:'Gain muscle + maintain body fat', caloriesPerLb:15, proteinPerLb:1, fat:65, adjustment:'If weight gain stalls or slows, increase carbs by 30 g/day. If body fat is rising too fast, decrease carbs by 20 g/day and increase protein by 20 g/day. Completely readjust every 10–20 lb gained. Switch to maintenance after no more than 3 months of weight-gain focus and stay in maintenance for at least 45 days.' },
+    { value:'lean_bulk', label:'Gain muscle + slow gain of body fat — lean bulk', caloriesPerLb:15, proteinPerLb:1.25, fat:65, adjustment:'If weight gain stalls or slows, increase carbs by 30 g/day. If body fat is rising too fast, decrease carbs by 20 g/day and increase protein by 20 g/day. If muscle is starting to be lost or muscle gains stall, increase protein by 20 g/day. Do not go over 15% body fat; if it reaches 15%, switch to a short maintenance phase and then a fat-loss phase. Completely readjust every 10–20 lb gained. Switch to maintenance after no more than 3 months of weight-gain focus and stay in maintenance for at least 45 days.' },
+    { value:'maintain', label:'Maintain weight', caloriesPerLb:13, proteinPerLb:1, fat:55, adjustment:'If bodyweight is increasing, decrease carbs by 30 g/day. If bodyweight is decreasing, increase carbs by 30 g/day.' },
+    { value:'recomp', label:'Maintain weight + lose body fat + gain muscle — recomp', caloriesPerLb:13, proteinPerLb:1, fat:55, adjustment:'If bodyweight is increasing, decrease carbs by 30 g/day. If bodyweight is decreasing, increase carbs by 30 g/day. If body fat is increasing, decrease carbs by 30 g/day and increase protein by 30 g/day.' }
+  ];
+  const GOAL_BY_VALUE = Object.fromEntries(GOAL_OPTIONS.map(goal => [goal.value, goal]));
+  const GOAL_DISCLAIMER = 'Note/Disclaimer: these are starting recommendations and eceryone may need adjustments depending on each indibiduals metabolism and activity levels. recommended adjustments are with each choice the recommendations are exactly that, recommendations. you may need a larger or smaller adjustments. if you have a trainer and they have you following a certain set of calories and macros, please follow their recommendations, especially if they seem to be working for youl.';
+  function calculateAutoMacroTargets(weight, goalValue, lowCarb = false) {
+    const goal=GOAL_BY_VALUE[goalValue], w=Number(weight);
+    if(!goal || !Number.isFinite(w) || w<=0) return null;
+    const calories=w*goal.caloriesPerLb, protein=w*goal.proteinPerLb;
+    let carbs=Math.max((calories-protein*4-goal.fat*9)/4,0), fat=goal.fat;
+    if(goalValue==='recomp' && lowCarb){ carbs=40; fat=Math.max((calories-protein*4-carbs*4)/9,0); }
+    return {calorie_goal:Math.round(calories),protein_goal:Math.round(protein*10)/10,carbs_goal:Math.round(carbs*10)/10,fat_goal:Math.round(fat*10)/10};
   }
 
   const $ = (selector) => document.querySelector(selector);
@@ -154,6 +179,7 @@ const PulsePlateApp = (() => {
   async function init() {
     try {
       supabase = await window.PulsePlate.ready;
+      supabaseTelemetryClient = supabase;
       const { data, error } = await supabase.auth.getSession();
       if (error || !data.session) { window.location.href = 'auth.html'; return; }
       user = data.session.user;
@@ -179,6 +205,7 @@ const PulsePlateApp = (() => {
       await renderPage();
     } catch (error) {
       console.error(error);
+      reportClientError(error, { source: 'app.init' });
       document.body.insertAdjacentHTML('afterbegin', `<div class="alpha-error">MacroSync could not initialize. ${escapeHtml(error.message)}</div>`);
     }
   }
@@ -259,7 +286,7 @@ const PulsePlateApp = (() => {
           <div class="onboarding-section">
             <h2>What is your main goal?</h2>
             <div class="goal-choice-grid">
-              ${[['lose','Lose weight'],['maintain','Maintain my weight'],['gain','Build muscle / gain weight'],['health','General health'],['custom','Something else']].map(([v,l])=>`<label class="choice-card"><input type="radio" name="primaryGoal" value="${v}" ${profile?.primary_goal===v?'checked':''}><span>${l}</span></label>`).join('')}
+              ${GOAL_OPTIONS.map(goal=>`<label class="choice-card"><input type="radio" name="primaryGoal" value="${goal.value}" ${(['lose','lose_basic'].includes(profile?.primary_goal)&&goal.value==='lose_basic')||(['gain','gain_basic'].includes(profile?.primary_goal)&&goal.value==='gain_basic')||profile?.primary_goal===goal.value?'checked':''}><span>${goal.label}</span></label>`).join('')}
             </div>
           </div>
           <div class="onboarding-grid">
@@ -269,6 +296,8 @@ const PulsePlateApp = (() => {
           <div class="onboarding-section">
             <h2>Daily nutrition targets</h2>
             <p class="page-copy">These are starting targets. You can change them later.</p>
+            <p class="goal-disclaimer">${GOAL_DISCLAIMER}</p>
+            <div class="auto-macro-box"><div><p class="eyebrow">Automatic targets</p><h3>Calculate starting targets</h3><p class="page-copy">Choose a goal and enter your current weight to calculate starting targets.</p></div><button class="ghost-button" type="button" data-onboard-auto-calculate>Calculate targets</button><label class="toggle-row low-carb-toggle" data-onboard-low-carb-wrap hidden><input type="checkbox" data-onboard-low-carb><span><strong>Low-carb recomp</strong><small>Use 40 g carbs and let fat fill the remaining calories.</small></span></label><p class="settings-status" data-onboard-auto-status role="status"></p></div>
             <div class="onboarding-grid onboarding-grid-four">
               <div class="field"><label for="onboardCalories">Calories</label><input id="onboardCalories" type="number" min="500" max="10000" required value="${existingGoals.calorie_goal}"></div>
               <div class="field"><label for="onboardProtein">Protein (g)</label><input id="onboardProtein" type="number" min="0" max="1000" required value="${existingGoals.protein_goal}"></div>
@@ -293,6 +322,13 @@ const PulsePlateApp = (() => {
     const syncRole = () => { business.hidden = overlay.querySelector('input[name="role"]:checked')?.value !== 'trainer'; };
     overlay.querySelectorAll('input[name="role"]').forEach(input => input.addEventListener('change', syncRole));
     syncRole();
+    const onboardAuto=overlay.querySelector('[data-onboard-auto-calculate]');
+    const onboardStatus=overlay.querySelector('[data-onboard-auto-status]');
+    const lowWrap=overlay.querySelector('[data-onboard-low-carb-wrap]');
+    const lowInput=overlay.querySelector('[data-onboard-low-carb]');
+    const syncOnboardGoal=()=>{ lowWrap.hidden=overlay.querySelector('input[name="primaryGoal"]:checked')?.value!=='recomp'; };
+    overlay.querySelectorAll('input[name="primaryGoal"]').forEach(i=>i.addEventListener('change',syncOnboardGoal)); syncOnboardGoal();
+    onboardAuto?.addEventListener('click',()=>{const goal=overlay.querySelector('input[name="primaryGoal"]:checked')?.value;const targets=calculateAutoMacroTargets(Number(overlay.querySelector('#onboardCurrentWeight').value),goal,Boolean(lowInput?.checked));if(!targets){onboardStatus.textContent='Select a goal and enter a valid current weight first.';return;}overlay.querySelector('#onboardCalories').value=targets.calorie_goal;overlay.querySelector('#onboardProtein').value=targets.protein_goal;overlay.querySelector('#onboardCarbs').value=targets.carbs_goal;overlay.querySelector('#onboardFat').value=targets.fat_goal;onboardStatus.textContent='Starting targets calculated. You can adjust them before saving.';});
     overlay.querySelector('#onboardingForm').addEventListener('submit', async (event) => {
       event.preventDefault();
       const status = overlay.querySelector('#onboardingStatus');
@@ -300,11 +336,12 @@ const PulsePlateApp = (() => {
       const primaryGoal = overlay.querySelector('input[name="primaryGoal"]:checked')?.value || 'health';
       const role = overlay.querySelector('input[name="role"]:checked')?.value || 'user';
       const profilePayload = { id:user.id, display_name:profile?.display_name || user.user_metadata?.display_name || user.email?.split('@')[0] || 'MacroSync User', role, business_name:role==='trainer' ? overlay.querySelector('#onboardBusiness').value.trim() || null : null, primary_goal:primaryGoal, onboarding_complete:true };
-      const goalsPayload = { user_id:user.id, calorie_goal:Number(overlay.querySelector('#onboardCalories').value), protein_goal:Number(overlay.querySelector('#onboardProtein').value), carbs_goal:Number(overlay.querySelector('#onboardCarbs').value), fat_goal:Number(overlay.querySelector('#onboardFat').value), current_weight:Number(overlay.querySelector('#onboardCurrentWeight').value)||null, goal_weight:Number(overlay.querySelector('#onboardGoalWeight').value)||null };
+      const goalsPayload = { user_id:user.id, calorie_goal:Number(overlay.querySelector('#onboardCalories').value), protein_goal:Number(overlay.querySelector('#onboardProtein').value), carbs_goal:Number(overlay.querySelector('#onboardCarbs').value), fat_goal:Number(overlay.querySelector('#onboardFat').value), current_weight:Number(overlay.querySelector('#onboardCurrentWeight').value)||null, goal_weight:Number(overlay.querySelector('#onboardGoalWeight').value)||null, low_carb:Boolean(overlay.querySelector('[data-onboard-low-carb]')?.checked) };
       const { error: profileError } = await supabase.from('profiles').upsert(profilePayload);
       if (profileError) { status.textContent=profileError.message; return; }
       const { error: goalError } = await supabase.from('nutrition_goals').upsert(goalsPayload);
       if (goalError) { status.textContent=goalError.message; return; }
+      await trackEvent('onboarding_completed', { role, primary_goal: primaryGoal });
       overlay.remove();
       await renderPage();
     });
@@ -616,6 +653,7 @@ const PulsePlateApp = (() => {
 
   async function renderPage() {
     const page = document.body.dataset.page || location.pathname.split('/').pop().replace('.html','');
+    trackEvent('page_view', { page });
     const currentProfile = await getCurrentProfile().catch(() => null);
     if (isLimitedMinorProfile(currentProfile) && !['log','food-management'].includes(page)) { window.location.replace('log_food.html'); return; }
     if (page === 'dashboard' || page === 'index') await renderDashboard();
@@ -627,6 +665,7 @@ const PulsePlateApp = (() => {
     if (page === 'recipes') await renderRecipes();
     if (page === 'social' || page === 'friends-add' || page === 'friends-messages' || page === 'friends-meals') await renderSocial();
     if (page === 'trainers') await renderTrainers();
+    if (page === 'trainer-settings') await renderTrainerSettings();
     if (page === 'admin') await renderAdmin();
     wireDateControls();
   }
@@ -983,6 +1022,17 @@ const PulsePlateApp = (() => {
 
     await renderPersonalFoods();
     await renderMyCommunityFoods();
+    const { data: verificationRow } = await supabase.from('trainer_verifications').select('status').eq('user_id', user.id).maybeSingle();
+    const canPublishCommunity = verificationRow?.status === 'approved';
+    document.body.dataset.canPublishCommunity = canPublishCommunity ? 'true' : 'false';
+    const communityToggle = $('[data-community-toggle]');
+    if (communityToggle) {
+      communityToggle.hidden = !canPublishCommunity;
+      communityToggle.title = canPublishCommunity ? 'Add a Community Food' : 'Only verified trainers can publish Community Foods.';
+    }
+    if (!canPublishCommunity) {
+      $$('[data-community-publish-note]').forEach(el => el.hidden = false);
+    }
     await renderMealManager();
     let foodSource = 'usda';
     const sourceButtons = $$('[data-food-source]');
@@ -1393,12 +1443,13 @@ const PulsePlateApp = (() => {
   }
 
   function openCommunityFoodModal(){
+    if (document.body.dataset.canPublishCommunity !== 'true') { alert('Only verified trainers can publish Community Foods.'); return; }
     const overlay=document.createElement('div');overlay.className='modal-overlay';
     overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Food databases</p><h2>Add a food</h2><p class="page-copy">Set one default serving and its nutrition. Then add optional exact serving choices for people who prefer grams, ounces, cups, or individual units.</p><div class="form-grid"><div class="field"><label>Name</label><input data-c-name maxlength="120" placeholder="Egg"></div><div class="field"><label>Default serving amount</label><input data-c-amount type="number" min="0.01" step="0.01" value="1"></div><div class="field"><label>Default serving unit</label><input data-c-unit maxlength="40" value="serving" placeholder="egg, slice, cup"></div><div class="field"><label>Default serving weight (g)</label><input data-c-grams type="number" min="0.01" step="0.01" value="100"></div><div class="field"><label>Calories for default serving</label><input data-c-cal type="number" min="0" step="0.1"></div><div class="field"><label>Protein (g)</label><input data-c-protein type="number" min="0" step="0.1"></div><div class="field"><label>Carbs (g)</label><input data-c-carbs type="number" min="0" step="0.1"></div><div class="field"><label>Fat (g)</label><input data-c-fat type="number" min="0" step="0.1"></div></div><div class="serving-options-builder"><div class="serving-option-builder-header"><div><h3>Additional serving options</h3><p class="page-copy">${servingOptionHelpText()}</p></div><button type="button" class="ghost-button" data-add-serving-option>+ Add option</button></div><div data-serving-option-list></div></div><div class="field"><label>When an exact option is not provided</label><select data-c-conversion><option value="none">Do not offer gram/ounce/unit conversions</option><option value="estimate">Allow estimated conversions</option></select><p class="field-help">Estimated conversions are based on the serving weight and may not match the source exactly.</p></div><label class="toggle-row"><input data-c-personal type="checkbox" checked><span><strong>Save to My Foods</strong><small>Keep a private copy in your personal food database.</small></span></label><label class="toggle-row"><input data-c-publish type="checkbox" checked><span><strong>Publish to Community Foods</strong><small>Make the food searchable by other MacroSync users.</small></span></label><p class="save-status" data-c-status></p><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-c-save type="button">Save food</button></div></section>`;
     document.body.appendChild(overlay);overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());attachServingOptionEditor(overlay);
     overlay.querySelector('[data-c-save]').onclick=async()=>{
       const status=overlay.querySelector('[data-c-status]');const name=overlay.querySelector('[data-c-name]').value.trim();const cal=Number(overlay.querySelector('[data-c-cal]').value),pro=Number(overlay.querySelector('[data-c-protein]').value),carb=Number(overlay.querySelector('[data-c-carbs]').value),fat=Number(overlay.querySelector('[data-c-fat]').value),amount=Number(overlay.querySelector('[data-c-amount]').value),grams=Number(overlay.querySelector('[data-c-grams]').value),unit=overlay.querySelector('[data-c-unit]').value.trim()||'serving';
-      const savePersonal=overlay.querySelector('[data-c-personal]').checked; const publishCommunity=overlay.querySelector('[data-c-publish]').checked; const conversionMode=overlay.querySelector('[data-c-conversion]').value; const options=collectServingOptions(overlay);
+      const savePersonal=overlay.querySelector('[data-c-personal]').checked; const publishCommunity= document.body.dataset.canPublishCommunity === 'true' && overlay.querySelector('[data-c-publish]').checked; const conversionMode=overlay.querySelector('[data-c-conversion]').value; const options=collectServingOptions(overlay);
       const errorMsg=validateDisplayName(name); if(errorMsg){status.textContent=errorMsg;return;} if(!savePersonal&&!publishCommunity){status.textContent='Choose at least one database.';return;}
       if([cal,pro,carb,fat,amount,grams].some(v=>!Number.isFinite(v)||v<0)||amount<=0||grams<=0){status.textContent='Enter valid nutrition values and a positive default serving weight.';return;}
       for(const o of options){if(!Number.isFinite(o.amount)||o.amount<=0||!o.unit||!Number.isFinite(o.grams)||o.grams<=0){status.textContent='Complete every additional serving option, including its gram weight.';return;}if(o.nutritionProvided&&[o.calories,o.protein,o.carbs,o.fat].some(v=>!Number.isFinite(v)||v<0)){status.textContent='Additional serving nutrition must use valid non-negative values.';return;}}
@@ -1501,16 +1552,20 @@ const PulsePlateApp = (() => {
       else {const multiplier=source==='personal' ? (amount*28.3495)/Number(defaultOption.grams||100) : (amount*28.3495)/100;values={calories:n.calories*multiplier,protein:n.protein*multiplier,carbs:n.carbs*multiplier,fat:n.fat*multiplier};display=`${moneyless(amount)} oz`;}
       const label=exact?'Exact creator serving':'Estimated conversion';preview.innerHTML=`<div><strong>${moneyless(values.calories)}</strong><span>Calories</span></div><div><strong>${moneyless(values.protein)}g</strong><span>Protein</span></div><div><strong>${moneyless(values.carbs)}g</strong><span>Carbs</span></div><div><strong>${moneyless(values.fat)}g</strong><span>Fat</span></div><small class="serving-preview-note">${label}</small>`;return{amount,unit,display,values};
     }
-    amountInput.oninput=calculate;unitSelect.onchange=calculate;calculate();overlay.querySelectorAll('[data-close-modal]').forEach(b=>b.onclick=()=>overlay.remove());overlay.querySelector('[data-confirm-serving]').onclick=async()=>{const result=calculate();const meal=overlay.querySelector('#servingMeal').value;const payload={user_id:user.id,logged_date:dateKey(selectedDate),meal,food_name:food.name,serving:result.display,fdc_id:source==='usda'?Number(food.id):(food.fdc_id?Number(food.fdc_id):null),calories:result.values.calories,protein:result.values.protein,carbs:result.values.carbs,fat:result.values.fat};const{error}=await supabase.from('food_entries').insert(payload);if(error){alert(error.message);return;}overlay.remove();await renderSelectedDateEntries();await renderPersonalFoods();};
+    amountInput.oninput=calculate;unitSelect.onchange=calculate;calculate();overlay.querySelectorAll('[data-close-modal]').forEach(b=>b.onclick=()=>overlay.remove());overlay.querySelector('[data-confirm-serving]').onclick=async()=>{const result=calculate();const meal=overlay.querySelector('#servingMeal').value;const payload={user_id:user.id,logged_date:dateKey(selectedDate),meal,food_name:food.name,serving:result.display,fdc_id:source==='usda'?Number(food.id):(food.fdc_id?Number(food.fdc_id):null),calories:result.values.calories,protein:result.values.protein,carbs:result.values.carbs,fat:result.values.fat};const{error}=await supabase.from('food_entries').insert(payload);if(error){alert(error.message);return;}
+      await trackEvent('food_logged', { source });
+      overlay.remove();await renderSelectedDateEntries();await renderPersonalFoods();};
   }
 
   function openManualFoodModal() {
     const overlay=document.createElement('div');overlay.className='modal-overlay';
     overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" type="button" data-close-modal>×</button><p class="eyebrow">Food databases</p><h2>Create manual food</h2><p class="page-copy">Set the default serving and nutrition first. You can add exact alternative servings so users do not have to rely on conversions.</p><div class="form-grid"><div class="field"><label>Name</label><input data-manual-name placeholder="Homemade burrito"></div><div class="field"><label>Default serving amount</label><input data-manual-serving type="number" min="0.01" step="0.01" value="1"></div><div class="field"><label>Default serving unit</label><input data-manual-unit value="serving" placeholder="serving, egg, cup..."></div><div class="field"><label>Default serving weight (g)</label><input data-manual-grams type="number" min="0.01" step="0.01" value="100"></div><div class="field"><label>Calories for default serving</label><input data-manual-cal type="number" min="0" step="0.1"></div><div class="field"><label>Protein (g)</label><input data-manual-protein type="number" min="0" step="0.1"></div><div class="field"><label>Carbs (g)</label><input data-manual-carbs type="number" min="0" step="0.1"></div><div class="field"><label>Fat (g)</label><input data-manual-fat type="number" min="0" step="0.1"></div></div><div class="serving-options-builder"><div class="serving-option-builder-header"><div><h3>Additional serving options</h3><p class="page-copy">${servingOptionHelpText()}</p></div><button type="button" class="ghost-button" data-add-serving-option>+ Add option</button></div><div data-serving-option-list></div></div><div class="field"><label>When an exact option is not provided</label><select data-manual-conversion><option value="none">Do not offer gram/ounce/unit conversions</option><option value="estimate">Allow estimated conversions</option></select><p class="field-help">Estimated conversions use the stored serving weight and may not match the source exactly.</p></div><label class="toggle-row"><input data-manual-community type="checkbox"><span><strong>Also publish to Community Foods</strong><small>Publish the same serving choices for other MacroSync users.</small></span></label><div class="modal-actions"><button class="ghost-button" data-close-modal type="button">Cancel</button><button class="primary-button" data-save-manual type="button">Save food & add to meal</button></div><p class="save-status" data-manual-status></p></section>`;
-    document.body.appendChild(overlay);overlay.querySelectorAll('[data-close-modal]').forEach(b=>b.onclick=()=>overlay.remove());attachServingOptionEditor(overlay);
+    document.body.appendChild(overlay);
+    if (document.body.dataset.canPublishCommunity !== 'true') { const publishToggle = overlay.querySelector('[data-manual-community]')?.closest('.toggle-row'); if (publishToggle) publishToggle.hidden = true; }
+    overlay.querySelectorAll('[data-close-modal]').forEach(b=>b.onclick=()=>overlay.remove());attachServingOptionEditor(overlay);
     overlay.querySelector('[data-save-manual]').onclick=async()=>{
       const status=overlay.querySelector('[data-manual-status]');const name=overlay.querySelector('[data-manual-name]').value.trim();if(!name){status.textContent='Enter a food name.';return;}
-      const servingAmount=Number(overlay.querySelector('[data-manual-serving]').value),grams=Number(overlay.querySelector('[data-manual-grams]').value),calories=Number(overlay.querySelector('[data-manual-cal]').value)||0,protein=Number(overlay.querySelector('[data-manual-protein]').value)||0,carbs=Number(overlay.querySelector('[data-manual-carbs]').value)||0,fat=Number(overlay.querySelector('[data-manual-fat]').value)||0,unit=overlay.querySelector('[data-manual-unit]').value.trim()||'serving';const options=collectServingOptions(overlay);const conversionMode=overlay.querySelector('[data-manual-conversion]').value;const publishCommunity=overlay.querySelector('[data-manual-community]').checked;
+      const servingAmount=Number(overlay.querySelector('[data-manual-serving]').value),grams=Number(overlay.querySelector('[data-manual-grams]').value),calories=Number(overlay.querySelector('[data-manual-cal]').value)||0,protein=Number(overlay.querySelector('[data-manual-protein]').value)||0,carbs=Number(overlay.querySelector('[data-manual-carbs]').value)||0,fat=Number(overlay.querySelector('[data-manual-fat]').value)||0,unit=overlay.querySelector('[data-manual-unit]').value.trim()||'serving';const options=collectServingOptions(overlay);const conversionMode=overlay.querySelector('[data-manual-conversion]').value;const publishCommunity= document.body.dataset.canPublishCommunity === 'true' && overlay.querySelector('[data-manual-community]').checked;
       const errorMsg=validateDisplayName(name);if(errorMsg){status.textContent=errorMsg;return;}if(!Number.isFinite(servingAmount)||servingAmount<=0||!Number.isFinite(grams)||grams<=0||[calories,protein,carbs,fat].some(v=>!Number.isFinite(v)||v<0)){status.textContent='Enter valid nutrition values and a positive default serving weight.';return;}
       for(const o of options){if(!Number.isFinite(o.amount)||o.amount<=0||!o.unit||!Number.isFinite(o.grams)||o.grams<=0){status.textContent='Complete every additional serving option, including its gram weight.';return;}if(o.nutritionProvided&&[o.calories,o.protein,o.carbs,o.fat].some(v=>!Number.isFinite(v)||v<0)){status.textContent='Additional serving nutrition must use valid non-negative values.';return;}}
       if(protein+carbs+fat>100.5){status.textContent='The default serving macros are too large to be valid.';return;}status.textContent='Saving…';
@@ -1814,39 +1869,186 @@ const PulsePlateApp = (() => {
   const TRAINER_TYPE_NAMES = Object.fromEntries(TRAINER_TYPES.map((name,i)=>[i+1,name]));
   const TRAINER_PRICES = {1:'Under $25/session',2:'$25–$49/session',3:'$50–$74/session',4:'$75–$99/session',5:'$100+/session',6:'Contact trainer'};
 
-  function trainerProfileFieldsMarkup(profile={}) {
-    const selected = Array.isArray(profile.training_types) ? profile.training_types : [];
-    const types = TRAINER_TYPES.map(t => `<label class="choice-chip"><input type="checkbox" name="trainerType" value="${TRAINER_TYPE_IDS[t]}" ${selected.includes(TRAINER_TYPE_IDS[t]) || selected.includes(t)?'checked':''}><span>${escapeHtml(t)}</span></label>`).join('');
-    return `<div class="trainer-profile-form" data-trainer-profile-form>
-      <div class="field"><label for="trainerBio">Short bio <small>(optional, maximum 250 words)</small></label><textarea id="trainerBio" rows="7" maxlength="5000" placeholder="Tell potential clients a little about your training approach and experience…">${escapeHtml(profile.bio || '')}</textarea><small class="field-help" data-trainer-word-count>0 / 250 words</small></div>
-      <div class="field"><label for="trainerLocation">Based in <small>(optional)</small></label><input id="trainerLocation" maxlength="160" value="${escapeHtml(profile.location || '')}" placeholder="City, state or business area"></div>
-      <div class="field"><label for="trainerPhone">Phone <small>(optional)</small></label><input id="trainerPhone" type="tel" maxlength="32" value="${escapeHtml(profile.phone || '')}"></div>
-      <div class="field"><label>Training types <small>(optional, recommended)</small></label><div class="choice-chip-grid">${types}</div></div>
-      <div class="form-grid-2"><div class="field"><label for="trainerPriceRange">Price range <small>(optional, recommended)</small></label><select id="trainerPriceRange"><option value="">Not specified</option>${Object.entries(TRAINER_PRICES).map(([v,l])=>`<option value="${v}" ${String(profile.price_range||'')===v?'selected':''}>${l}</option>`).join('')}</select></div><div class="field"><label for="trainerYears">Years of experience <small>(optional, recommended)</small></label><input id="trainerYears" type="number" min="0" max="100" step="1" value="${profile.years_experience ?? ''}"></div></div>
-      <div class="form-grid-2"><div class="field"><label for="trainerInstagram">Instagram <small>(optional)</small></label><input id="trainerInstagram" maxlength="80" placeholder="username" value="${escapeHtml(profile.instagram || '')}"></div><div class="field"><label for="trainerFacebook">Facebook <small>(optional)</small></label><input id="trainerFacebook" maxlength="120" placeholder="profile or username" value="${escapeHtml(profile.facebook || '')}"></div><div class="field"><label for="trainerTiktok">TikTok <small>(optional)</small></label><input id="trainerTiktok" maxlength="80" placeholder="username" value="${escapeHtml(profile.tiktok || '')}"></div><div class="field"><label for="trainerYoutube">YouTube <small>(optional)</small></label><input id="trainerYoutube" maxlength="120" placeholder="channel or handle" value="${escapeHtml(profile.youtube || '')}"></div><div class="field"><label for="trainerWebsite">Website <small>(optional)</small></label><input id="trainerWebsite" maxlength="200" type="url" placeholder="https://…" value="${escapeHtml(profile.website || '')}"></div></div>
-      <label class="toggle-row"><input id="trainerPublic" type="checkbox" ${profile.is_public?'checked':''}><span><strong>List me in Find a Trainer</strong><small>Keep this off if you do not want your trainer profile publicly searchable.</small></span></label>
-      <button class="primary-button" type="submit">Save trainer profile</button><p class="settings-status" data-trainer-profile-status role="status"></p>
-    </div>`;
-  }
-
   function trainerWordCount(text) { return text.trim() ? text.trim().split(/\s+/).length : 0; }
-  async function renderTrainerSettings(profile) {
-    const host = $('[data-trainer-profile-settings]'); if (!host) return;
-    if (profile?.role !== 'trainer') { host.hidden = true; $('[data-settings-tab=trainer]')?.setAttribute('hidden','hidden'); return; }
-    $('[data-settings-tab=trainer]')?.removeAttribute('hidden');
-    const { data, error } = await supabase.from('trainer_profiles').select('*').eq('user_id', user.id).maybeSingle();
-    if (error) { host.hidden = false; host.innerHTML = `<p class="settings-status">${escapeHtml(error.message)}</p>`; return; }
-    host.hidden = false; host.innerHTML = `<div class="panel-header"><div><p class="eyebrow">Personal trainer</p><h2>Trainer profile</h2><p class="page-copy">This optional profile helps clients find you. MacroSync is not a social network; your profile is only listed when you choose to make it public.</p></div></div>${trainerProfileFieldsMarkup(data || {})}`;
-    const form=host.querySelector('[data-trainer-profile-form]'), bio=host.querySelector('#trainerBio'), count=host.querySelector('[data-trainer-word-count]');
-    const updateCount=()=>{ const n=trainerWordCount(bio.value); count.textContent=`${n} / 250 words`; count.style.color=n>250?'var(--red)':''; };
-    bio.addEventListener('input',updateCount); updateCount();
-    form.addEventListener('submit', async e=>{ e.preventDefault(); const wordCount=trainerWordCount(bio.value); const status=host.querySelector('[data-trainer-profile-status]'); if(wordCount>250){status.textContent='Your bio must be 250 words or fewer.';return;} const years=host.querySelector('#trainerYears').value; const payload={user_id:user.id,bio:bio.value.trim()||null,location:host.querySelector('#trainerLocation').value.trim()||null,phone:host.querySelector('#trainerPhone').value.trim()||null,instagram:host.querySelector('#trainerInstagram').value.trim()||null,facebook:host.querySelector('#trainerFacebook').value.trim()||null,tiktok:host.querySelector('#trainerTiktok').value.trim()||null,youtube:host.querySelector('#trainerYoutube').value.trim()||null,website:host.querySelector('#trainerWebsite').value.trim()||null,training_types:[...host.querySelectorAll('input[name="trainerType"]:checked')].map(x=>Number(x.value)),price_range:host.querySelector('#trainerPriceRange').value?Number(host.querySelector('#trainerPriceRange').value):null,years_experience:years===''?null:Number(years),is_public:host.querySelector('#trainerPublic').checked,updated_at:new Date().toISOString()}; status.textContent='Saving…'; const {error}=await supabase.from('trainer_profiles').upsert(payload,{onConflict:'user_id'}); status.textContent=error?error.message:'Trainer profile saved.'; });
-  }
 
   function trainerPriceLabel(value){ return TRAINER_PRICES[value] || 'Price not specified'; }
   function socialUrl(kind,value){ if(!value)return null; const v=value.trim(); if(/^https?:\/\//i.test(v))return v; const bases={instagram:'https://www.instagram.com/',facebook:'https://www.facebook.com/',tiktok:'https://www.tiktok.com/@',youtube:'https://www.youtube.com/@'}; return bases[kind]?bases[kind]+v.replace(/^@/,''):null; }
-  function renderTrainerCard(t){ const types=(t.training_types||[]).slice(0,4).map(x=>escapeHtml(TRAINER_TYPE_NAMES[x] || x)).join(' · '); return `<article class="trainer-card"><div class="trainer-card-top"><div><div class="profile-strip"><span class="avatar">${escapeHtml((t.display_name||'T').charAt(0).toUpperCase())}</span><span><strong>${escapeHtml(t.display_name||'Trainer')}</strong>${t.business_name?`<p>${escapeHtml(t.business_name)}</p>`:''}</span></div></div><span class="role-badge trainer">Personal Trainer</span></div><div class="trainer-meta">${t.location?`<span>${escapeHtml(t.location)}</span>`:''}${t.years_experience!=null?`<span>${t.years_experience} years experience</span>`:''}${t.price_range?`<span>${escapeHtml(trainerPriceLabel(t.price_range))}</span>`:''}</div>${types?`<p class="trainer-types">${types}</p>`:''}${t.bio?`<p class="trainer-bio">${escapeHtml(t.bio)}</p>`:''}<button class="primary-button" type="button" data-view-trainer="${t.user_id}">View profile</button></article>`; }
-  async function showTrainerProfile(id){ const {data,error}=await supabase.rpc('get_trainer_profile',{p_trainer_id:id}); if(error) throw error; const t=Array.isArray(data)?data[0]:data; if(!t) throw new Error('Trainer profile not found.'); const overlay=document.createElement('div'); overlay.className='modal-overlay'; overlay.innerHTML=`<section class="modal-card trainer-detail-modal" role="dialog" aria-modal="true"><button class="modal-close" data-close-trainer type="button" aria-label="Close">×</button><p class="eyebrow">Personal trainer</p><h2>${escapeHtml(t.display_name)}</h2>${t.business_name?`<p class="page-copy">${escapeHtml(t.business_name)}</p>`:''}<div class="trainer-meta">${t.location?`<span>${escapeHtml(t.location)}</span>`:''}${t.years_experience!=null?`<span>${t.years_experience} years experience</span>`:''}${t.price_range?`<span>${escapeHtml(trainerPriceLabel(t.price_range))}</span>`:''}</div>${t.training_types?.length?`<div class="trainer-detail-section"><h3>Training</h3><p>${t.training_types.map(x=>escapeHtml(TRAINER_TYPE_NAMES[x] || x)).join(' · ')}</p></div>`:''}${t.bio?`<div class="trainer-detail-section"><h3>About</h3><p>${escapeHtml(t.bio)}</p></div>`:''}${t.location?`<div class="trainer-detail-section"><h3>Based in</h3><p>${escapeHtml(t.location)}</p></div>`:''}${t.phone?`<div class="trainer-detail-section"><h3>Phone</h3><p>${escapeHtml(t.phone)}</p></div>`:''}<div class="trainer-detail-section"><h3>Contact & links</h3><div class="trainer-links">${['instagram','facebook','tiktok','youtube','website'].map(k=>{const u=socialUrl(k,t[k]);return u?`<a class="ghost-button" href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer">${k[0].toUpperCase()+k.slice(1)}</a>`:''}).join('')}</div></div><div class="modal-actions"><button class="primary-button" type="button" data-trainer-connect="${t.user_id}">Connect with trainer</button></div><p class="settings-status" data-trainer-connect-status role="status"></p></section>`; document.body.appendChild(overlay); overlay.querySelector('[data-close-trainer]').onclick=()=>overlay.remove(); overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()}); overlay.querySelector('[data-trainer-connect]').onclick=async()=>{const st=overlay.querySelector('[data-trainer-connect-status]'); st.textContent='Sending connection request…'; const {error}=await supabase.rpc('request_trainer_connection',{p_trainer_id:t.user_id}); if(error){st.textContent=error.code==='23505'?'A connection request already exists.':error.message;return;} st.textContent='Connection request sent. Once accepted, you can use MacroSync messaging and trainer/client sharing.';}; }
+  function renderTrainerCard(t){ const types=(t.training_types||[]).slice(0,4).map(x=>escapeHtml(TRAINER_TYPE_NAMES[x] || x)).join(' · '); return `<article class="trainer-card"><div class="trainer-card-top"><div><div class="profile-strip"><span class="avatar">${escapeHtml((t.display_name||'T').charAt(0).toUpperCase())}</span><span><strong>${escapeHtml(t.display_name||'Trainer')}</strong>${t.business_name?`<p>${escapeHtml(t.business_name)}</p>`:''}</span></div></div><span class="role-badge trainer">Personal Trainer ✓ Verified</span></div><div class="trainer-meta">${t.location?`<span>${escapeHtml(t.location)}</span>`:''}${t.years_experience!=null?`<span>${t.years_experience} years experience</span>`:''}${t.price_range?`<span>${escapeHtml(trainerPriceLabel(t.price_range))}</span>`:''}</div>${types?`<p class="trainer-types">${types}</p>`:''}${t.bio?`<p class="trainer-bio">${escapeHtml(t.bio)}</p>`:''}<button class="primary-button" type="button" data-view-trainer="${t.user_id}">View profile</button></article>`; }
+  async function showTrainerProfile(id){ const {data,error}=await supabase.rpc('get_trainer_profile',{p_trainer_id:id}); if(error) throw error; const t=Array.isArray(data)?data[0]:data; if(!t) throw new Error('Trainer profile not found.'); const overlay=document.createElement('div'); overlay.className='modal-overlay'; overlay.innerHTML=`<section class="modal-card trainer-detail-modal" role="dialog" aria-modal="true"><button class="modal-close" data-close-trainer type="button" aria-label="Close">×</button><p class="eyebrow">Personal trainer</p><h2>${escapeHtml(t.display_name)} <span class="verified-badge" title="Verified Trainer" aria-label="Verified Trainer">✓</span></h2>${t.business_name?`<p class="page-copy">${escapeHtml(t.business_name)}</p>`:''}<div class="trainer-meta">${t.location?`<span>${escapeHtml(t.location)}</span>`:''}${t.years_experience!=null?`<span>${t.years_experience} years experience</span>`:''}${t.price_range?`<span>${escapeHtml(trainerPriceLabel(t.price_range))}</span>`:''}</div>${t.training_types?.length?`<div class="trainer-detail-section"><h3>Training</h3><p>${t.training_types.map(x=>escapeHtml(TRAINER_TYPE_NAMES[x] || x)).join(' · ')}</p></div>`:''}${t.bio?`<div class="trainer-detail-section"><h3>About</h3><p>${escapeHtml(t.bio)}</p></div>`:''}${t.location?`<div class="trainer-detail-section"><h3>Based in</h3><p>${escapeHtml(t.location)}</p></div>`:''}${t.phone?`<div class="trainer-detail-section"><h3>Phone</h3><p>${escapeHtml(t.phone)}</p></div>`:''}<div class="trainer-detail-section"><h3>Contact & links</h3><div class="trainer-links">${['instagram','facebook','tiktok','youtube','website'].map(k=>{const u=socialUrl(k,t[k]);return u?`<a class="ghost-button" href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer">${k[0].toUpperCase()+k.slice(1)}</a>`:''}).join('')}</div></div><div class="modal-actions"><button class="primary-button" type="button" data-trainer-connect="${t.user_id}">Connect with trainer</button></div><p class="settings-status" data-trainer-connect-status role="status"></p></section>`; document.body.appendChild(overlay); overlay.querySelector('[data-close-trainer]').onclick=()=>overlay.remove(); overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()}); overlay.querySelector('[data-trainer-connect]').onclick=async()=>{const st=overlay.querySelector('[data-trainer-connect-status]'); st.textContent='Sending connection request…'; const {error}=await supabase.rpc('request_trainer_connection',{p_trainer_id:t.user_id}); if(error){st.textContent=error.code==='23505'?'A connection request already exists.':error.message;return;} st.textContent='Connection request sent. Once accepted, you can use MacroSync messaging and trainer/client sharing.';}; }
+  async function renderTrainerSettings(){
+    const form = $('[data-trainer-profile-form]');
+    if (!form) return;
+    const status = $('[data-trainer-settings-status]');
+    const typesBox = $('[data-trainer-types]');
+    const TRAINER_PROFILE_TYPES = [
+      'General Fitness','Strength Training','Weight Training','Conditioning','Sports Performance',
+      'Mobility / Flexibility','Functional Training','Group Training','Beginner Training','Youth Training',
+      'Senior Fitness','Nutrition / Meal Planning','Other'
+    ];
+    const typeInputs = TRAINER_PROFILE_TYPES.map((name, index) => `<label class="trainer-type-choice"><input type="checkbox" value="${index+1}"><span>${escapeHtml(name)}</span></label>`).join('');
+    if (typesBox) typesBox.innerHTML = typeInputs;
+
+    const profileResult = await supabase.from('profiles').select('role,business_name').eq('id', user.id).single();
+    if (profileResult.error) { if (status) status.textContent = profileResult.error.message; return; }
+    if (profileResult.data?.role !== 'trainer') {
+      form.innerHTML = '<div class="trainer-settings-notice"><p class="eyebrow">Trainer account required</p><h3>This page is for trainer accounts.</h3><p class="page-copy">Only accounts with the trainer role can create or manage a trainer profile.</p><a class="primary-button" href="settings.html">Back to Settings</a></div>';
+      return;
+    }
+
+    const { data, error } = await supabase.from('trainer_profiles').select('bio,location,phone,instagram,facebook,tiktok,youtube,website,training_types,price_range,years_experience,is_public').eq('user_id', user.id).maybeSingle();
+    if (error) { if (status) status.textContent = error.message; return; }
+    const t = data || {};
+    $('#trainerBusinessName').value = profileResult.data?.business_name || '';
+    $('#trainerLocation').value = t.location || '';
+    $('#trainerPhone').value = t.phone || '';
+    $('#trainerYears').value = t.years_experience ?? '';
+    $('#trainerBio').value = t.bio || '';
+    $('#trainerPrice').value = t.price_range ?? '';
+    $('#trainerWebsite').value = t.website || '';
+    $('#trainerInstagram').value = t.instagram || '';
+    $('#trainerFacebook').value = t.facebook || '';
+    $('#trainerTikTok').value = t.tiktok || '';
+    $('#trainerYoutube').value = t.youtube || '';
+    $('#trainerIsPublic').checked = t.is_public === true;
+    const selectedTypes = new Set((t.training_types || []).map(Number));
+    typesBox?.querySelectorAll('input[type="checkbox"]').forEach(input => { input.checked = selectedTypes.has(Number(input.value)); });
+
+    const verificationSection = $('[data-trainer-verification-section]');
+    const verificationForm = $('[data-trainer-verification-form]');
+    const verificationStatus = $('[data-trainer-verification-status]');
+    const verificationReview = $('[data-trainer-verification-review]');
+    const verificationFormStatus = $('[data-trainer-verification-form-status]');
+    if (verificationForm && verificationSection) {
+      const { data: verification, error: verificationError } = await supabase
+        .from('trainer_verifications')
+        .select('status,requested_at,reviewed_at,reviewer_note,experience,credentials,credential_number,proof_url,instagram,facebook,tiktok,youtube,other_social,professional_background,statement')
+        .eq('user_id', user.id)
+        .maybeSingle();
+      if (verificationError) {
+        verificationFormStatus.textContent = verificationError.message;
+      } else {
+        const vStatus = verification?.status || 'none';
+        const labels = { none:'Not requested', pending:'Pending review', approved:'Verified trainer', rejected:'Rejected', revoked:'Verification revoked' };
+        if (verificationStatus) {
+          verificationStatus.textContent = labels[vStatus] || 'Not requested';
+          verificationStatus.dataset.status = vStatus;
+        }
+        if (verification?.reviewer_note && verificationReview) {
+          verificationReview.hidden = false;
+          verificationReview.innerHTML = `<p><strong>Review note</strong></p><p>${escapeHtml(verification.reviewer_note)}</p>`;
+        }
+        const setValue = (selector, value) => { const el = $(selector); if (el) el.value = value || ''; };
+        setValue('#verificationExperience', verification?.experience);
+        setValue('#verificationCredentials', verification?.credentials);
+        setValue('#verificationCredentialNumber', verification?.credential_number);
+        setValue('#verificationProofUrl', verification?.proof_url);
+        setValue('#verificationInstagram', verification?.instagram);
+        setValue('#verificationFacebook', verification?.facebook);
+        setValue('#verificationTikTok', verification?.tiktok);
+        setValue('#verificationYoutube', verification?.youtube);
+        setValue('#verificationOtherSocial', verification?.other_social);
+        setValue('#verificationBackground', verification?.professional_background);
+        setValue('#verificationStatement', verification?.statement);
+
+        const locked = vStatus === 'pending' || vStatus === 'approved';
+        verificationForm.querySelectorAll('input, textarea, button').forEach(el => { el.disabled = locked; });
+        if (locked) {
+          verificationFormStatus.textContent = vStatus === 'pending'
+            ? 'Your verification request is awaiting administrator review.'
+            : 'Your trainer account is verified.';
+        }
+      }
+
+      const submitVerification = async event => {
+        event.preventDefault();
+        const experience = $('#verificationExperience').value.trim();
+        const credentials = $('#verificationCredentials').value.trim();
+        const credentialNumber = $('#verificationCredentialNumber').value.trim();
+        const proofUrl = $('#verificationProofUrl').value.trim();
+        const instagram = $('#verificationInstagram').value.trim();
+        const facebook = $('#verificationFacebook').value.trim();
+        const tiktok = $('#verificationTikTok').value.trim();
+        const youtube = $('#verificationYoutube').value.trim();
+        const otherSocial = $('#verificationOtherSocial').value.trim();
+        const background = $('#verificationBackground').value.trim();
+        const statement = $('#verificationStatement').value.trim();
+        if (!experience || !credentials || !background || !statement) {
+          verificationFormStatus.textContent = 'Please complete all required verification fields.';
+          return;
+        }
+        if (proofUrl) {
+          try { new URL(proofUrl); } catch (_) {
+            verificationFormStatus.textContent = 'Please enter a valid verification link.';
+            return;
+          }
+        }
+        verificationFormStatus.textContent = 'Submitting verification request…';
+        const { error } = await supabase.rpc('request_trainer_verification', {
+          p_experience: experience,
+          p_credentials: credentials,
+          p_credential_number: credentialNumber || null,
+          p_proof_url: proofUrl || null,
+          p_instagram: instagram || null,
+          p_facebook: facebook || null,
+          p_tiktok: tiktok || null,
+          p_youtube: youtube || null,
+          p_other_social: otherSocial || null,
+          p_professional_background: background,
+          p_statement: statement
+        });
+        if (error) {
+          verificationFormStatus.textContent = error.message;
+          return;
+        }
+        if (verificationStatus) { verificationStatus.textContent = 'Pending review'; verificationStatus.dataset.status = 'pending'; }
+        verificationForm.querySelectorAll('input, textarea, button').forEach(el => { el.disabled = true; });
+        verificationFormStatus.textContent = 'Verification request submitted. An administrator will review your information.';
+        await trackEvent('trainer_verification_requested');
+      };
+      const verificationSubmitButton = $('[data-submit-trainer-verification]');
+      verificationSubmitButton?.addEventListener('click', submitVerification);
+    }
+
+    const updateWordCount = () => {
+      const words = $('#trainerBio').value.trim() ? $('#trainerBio').value.trim().split(/\s+/).length : 0;
+      const counter = $('[data-bio-count]');
+      if (counter) { counter.textContent = `${words} / 250 words`; counter.classList.toggle('over-limit', words > 250); }
+      return words;
+    };
+    $('#trainerBio').addEventListener('input', updateWordCount);
+    updateWordCount();
+
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const bio = $('#trainerBio').value.trim();
+      const bioWords = bio ? bio.split(/\s+/).length : 0;
+      if (bioWords > 250) { status.textContent = 'Your short description must be 250 words or fewer.'; $('#trainerBio').focus(); return; }
+      const trainingTypes = [...typesBox.querySelectorAll('input:checked')].map(input => Number(input.value));
+      status.textContent = 'Saving…';
+      const { error: profileError } = await supabase.from('profiles').update({ business_name: $('#trainerBusinessName').value.trim() || null }).eq('id', user.id);
+      if (profileError) { status.textContent = profileError.message; return; }
+      const payload = {
+        user_id: user.id,
+        bio: bio || null,
+        location: $('#trainerLocation').value.trim() || null,
+        phone: $('#trainerPhone').value.trim() || null,
+        instagram: $('#trainerInstagram').value.trim() || null,
+        facebook: $('#trainerFacebook').value.trim() || null,
+        tiktok: $('#trainerTikTok').value.trim() || null,
+        youtube: $('#trainerYoutube').value.trim() || null,
+        website: $('#trainerWebsite').value.trim() || null,
+        training_types: trainingTypes,
+        price_range: $('#trainerPrice').value ? Number($('#trainerPrice').value) : null,
+        years_experience: $('#trainerYears').value === '' ? null : Number($('#trainerYears').value),
+        is_public: $('#trainerIsPublic').checked,
+        updated_at: new Date().toISOString()
+      };
+      const { error: saveError } = await supabase.from('trainer_profiles').upsert(payload, { onConflict: 'user_id' });
+      if (saveError) { status.textContent = saveError.message; return; }
+      status.textContent = 'Trainer profile saved.';
+    });
+  }
+
   async function renderTrainers(){ const list=$('#trainerList'); if(!list)return; const run=async()=>{list.innerHTML='<p class="page-copy">Searching…</p>'; const {data,error}=await supabase.rpc('search_trainers',{p_query:$('#trainerSearch').value.trim(),p_training_type:$('#trainerType').value?Number($('#trainerType').value):null,p_price_range:$('#trainerPrice').value?Number($('#trainerPrice').value):null}); if(error)throw error; list.innerHTML=data?.length?data.map(renderTrainerCard).join(''):'<p class="page-copy">No public trainers matched your search.</p>'; list.querySelectorAll('[data-view-trainer]').forEach(b=>b.onclick=()=>showTrainerProfile(b.dataset.viewTrainer).catch(e=>alert(e.message)));}; $('#trainerSearchButton').onclick=()=>run().catch(e=>{list.innerHTML=`<p class="settings-status">${escapeHtml(e.message)}</p>`}); $('#trainerSearch').onkeydown=e=>{if(e.key==='Enter')run().catch(console.error)}; await run(); }
 
   async function renderSettings(){
@@ -1867,8 +2069,8 @@ const PulsePlateApp = (() => {
     if (error) { if (status) status.textContent = error.message; return; }
     if (nameInput) nameInput.value = profile?.display_name || user.user_metadata?.display_name || '';
     if (emailInput) emailInput.value = user.email || profile?.email || '';
-    if (roleText) roleText.textContent = profile?.role === 'trainer' ? `Personal trainer${profile?.business_name ? ` · ${profile.business_name}` : ''}` : 'Normal user';
-    await renderTrainerSettings(profile);
+    if (roleText) roleText.textContent = profile?.is_admin ? 'Administrator' : (profile?.role === 'trainer' ? `Personal trainer${profile?.business_name ? ` · ${profile.business_name}` : ''}` : 'Normal user');
+    setText('[data-app-version]', `MacroSync v${MACROSYNC_VERSION}`);
 
     $('[data-settings-profile-form]')?.addEventListener('submit', async event => {
       event.preventDefault();
@@ -1918,8 +2120,9 @@ const PulsePlateApp = (() => {
       const feedbackValidation = validateMessageText(message);
       if (feedbackValidation) { feedbackStatus.textContent = feedbackValidation; return; }
       feedbackStatus.textContent = 'Sending feedback…';
-      const { error: feedbackError } = await supabase.from('feedback').insert({ user_id: user.id, category, message });
+      const { error: feedbackError } = await supabase.from('feedback').insert({ user_id: user.id, category, message, app_version: MACROSYNC_VERSION, page_path: location.pathname, user_agent: navigator.userAgent.slice(0, 500) });
       if (feedbackError) { feedbackStatus.textContent = feedbackError.message; return; }
+      await trackEvent('feedback_submitted', { category });
       $('#feedbackMessage').value = '';
       feedbackStatus.textContent = 'Thanks! Your feedback was submitted.';
     });
@@ -2002,53 +2205,28 @@ const PulsePlateApp = (() => {
       const status=document.createElement('p'); status.className='save-status'; status.textContent=error?error.message:'Profile saved.'; button.parentElement.appendChild(status);
     };
     const list=$('[data-account-list]');
-    if(list) list.innerHTML=`<div class="account-card selected"><div class="account-top"><div class="profile-strip"><span class="avatar">${escapeHtml((profile?.display_name||'P').charAt(0).toUpperCase())}</span><span><strong>${escapeHtml(profile?.display_name||'MacroSync User')}</strong><p>${profile?.role==='trainer'?'Personal trainer':'Normal user'}${profile?.business_name?' · '+escapeHtml(profile.business_name):''}</p></span></div><span class="role-badge">${profile?.role==='trainer'?'Trainer':'Alpha'}</span></div></div>`;
+    if(list) list.innerHTML=`<div class="account-card selected"><div class="account-top"><div class="profile-strip"><span class="avatar">${escapeHtml((profile?.display_name||'P').charAt(0).toUpperCase())}</span><span><strong>${escapeHtml(profile?.display_name||'MacroSync User')}</strong><p>${profile?.role==='trainer'?'Personal trainer':'Normal user'}${profile?.business_name?' · '+escapeHtml(profile.business_name):''}</p></span></div><span class="role-badge">${profile?.is_admin?'Administrator':profile?.role==='trainer'?'Trainer':'Alpha'}</span></div></div>`;
   }
 
   async function renderGoals(){
     const goals=await getGoals();
     const {data:profile}=await supabase.from('profiles').select('primary_goal').eq('id',user.id).single();
-    $('#calgoal').value=goals.calorie_goal;
-    $('#proteinGoal').value=goals.protein_goal;
-    $('#carbsGoal').value=goals.carbs_goal;
-    $('#fatGoal').value=goals.fat_goal;
-    $('#currentWeight').value=goals.current_weight ?? '';
-    $('#goalWeight').value=goals.goal_weight ?? '';
-    $('#primaryGoal').value=profile?.primary_goal || 'health';
-    $('[data-current-weight]').textContent=goals.current_weight ? moneyless(goals.current_weight) : '—';
-    $('[data-goal-weight]').textContent=goals.goal_weight ? moneyless(goals.goal_weight) : '—';
-
-    const autoStatus=$('[data-auto-macro-status]');
-    const autoButton=$('[data-auto-calculate]');
-    const updateAutoState=()=>{
-      const goal=$('#primaryGoal').value;
-      const weight=Number($('#currentWeight').value);
-      const supported=['lose','maintain','gain'].includes(goal);
-      const configured=supported && autoMacroRulesConfigured(goal);
-      if(autoButton) autoButton.disabled=false;
-      if(autoStatus) autoStatus.textContent='Automatic macro calculation is not yet available. It is coming at a later date.';
-    };
-    ['#currentWeight','#primaryGoal'].forEach(selector=>$(selector)?.addEventListener('input',updateAutoState));
-    updateAutoState();
-
-    autoButton?.addEventListener('click',()=>{
-      if(autoStatus) autoStatus.textContent='Automatic macro calculation is not yet available. It is coming at a later date.';
-    });
-
-    const button=$('.two-column-grid .panel .primary-button');
-    if(button){button.onclick=async()=>{
-      const payload={user_id:user.id,calorie_goal:Number($('#calgoal').value)||2050,protein_goal:Number($('#proteinGoal').value)||0,carbs_goal:Number($('#carbsGoal').value)||0,fat_goal:Number($('#fatGoal').value)||0,current_weight:Number($('#currentWeight').value)||null,goal_weight:Number($('#goalWeight').value)||null};
-      const {error}=await supabase.from('nutrition_goals').upsert(payload);
-      if(!error){ await supabase.from('profiles').update({primary_goal:$('#primaryGoal').value}).eq('id',user.id); }
-      button.parentElement.querySelector('.save-status')?.remove(); const status=document.createElement('p');status.className='save-status';status.textContent=error?error.message:'Goals saved.';button.parentElement.appendChild(status);
-      if(!error){ $('[data-current-weight]').textContent=payload.current_weight ? moneyless(payload.current_weight) : '—'; $('[data-goal-weight]').textContent=payload.goal_weight ? moneyless(payload.goal_weight) : '—'; }
-    };}
+    $('#calgoal').value=goals.calorie_goal; $('#proteinGoal').value=goals.protein_goal; $('#carbsGoal').value=goals.carbs_goal; $('#fatGoal').value=goals.fat_goal; $('#currentWeight').value=goals.current_weight ?? ''; $('#goalWeight').value=goals.goal_weight ?? '';
+    const legacyGoal={lose:'lose_basic',gain:'gain_basic',maintain:'maintain'}[profile?.primary_goal] || profile?.primary_goal; $('#primaryGoal').value=GOAL_BY_VALUE[legacyGoal] ? legacyGoal : 'maintain';
+    $('[data-current-weight]').textContent=goals.current_weight ? moneyless(goals.current_weight) : '—'; $('[data-goal-weight]').textContent=goals.goal_weight ? moneyless(goals.goal_weight) : '—';
+    const status=$('[data-auto-macro-status]'), button=$('[data-auto-calculate]'), lowCarb=$('[data-low-carb]'), details=$('[data-goal-details]');
+    if(lowCarb) lowCarb.querySelector('input').checked=Boolean(goals.low_carb);
+    const sync=()=>{const goal=GOAL_BY_VALUE[$('#primaryGoal').value]; lowCarb.hidden=goal?.value!=='recomp'; details.innerHTML=goal?`<strong>${escapeHtml(goal.label)}</strong><p>${escapeHtml(goal.adjustment)}</p>${goal.value==='recomp'&&lowCarb.querySelector('input')?.checked?'<p><strong>Low-carb:</strong> 40 g carbs/day; fat fills the remaining calories.</p>':''}`:'';};
+    $('#primaryGoal').addEventListener('change',sync); lowCarb.querySelector('input')?.addEventListener('change',sync); sync();
+    button.addEventListener('click',()=>{const targets=calculateAutoMacroTargets(Number($('#currentWeight').value),$('#primaryGoal').value,Boolean(lowCarb.querySelector('input')?.checked));if(!targets){status.textContent='Select a goal and enter a valid current weight first.';return;}$('#calgoal').value=targets.calorie_goal;$('#proteinGoal').value=targets.protein_goal;$('#carbsGoal').value=targets.carbs_goal;$('#fatGoal').value=targets.fat_goal;status.textContent='Starting targets calculated. You can adjust them before saving.';});
+    const save=$('.two-column-grid .panel .primary-button');
+    if(save) save.onclick=async()=>{const payload={user_id:user.id,calorie_goal:Number($('#calgoal').value)||2050,protein_goal:Number($('#proteinGoal').value)||0,carbs_goal:Number($('#carbsGoal').value)||0,fat_goal:Number($('#fatGoal').value)||0,current_weight:Number($('#currentWeight').value)||null,goal_weight:Number($('#goalWeight').value)||null,low_carb:Boolean(lowCarb.querySelector('input')?.checked)};const {error}=await supabase.from('nutrition_goals').upsert(payload);if(!error) await supabase.from('profiles').update({primary_goal:$('#primaryGoal').value}).eq('id',user.id);save.parentElement.querySelector('.save-status')?.remove();const msg=document.createElement('p');msg.className='save-status';msg.textContent=error?error.message:'Goals saved.';save.parentElement.appendChild(msg);if(!error){$('[data-current-weight]').textContent=payload.current_weight?moneyless(payload.current_weight):'—';$('[data-goal-weight]').textContent=payload.goal_weight?moneyless(payload.goal_weight):'—';};};
   }
 
   async function renderProgress(){
-    const { data: allEntries, error: entryError } = await supabase.from('food_entries').select('logged_date').eq('user_id', user.id).order('logged_date', {ascending:true});
+    const { data: dailySummaries, error: entryError } = await supabase.from('daily_nutrition_summaries').select('logged_date').eq('user_id', user.id).order('logged_date', {ascending:true});
     if(entryError) throw entryError;
-    const dates=[...new Set((allEntries||[]).map(e=>e.logged_date).filter(Boolean))].sort();
+    const dates=[...new Set((dailySummaries||[]).map(e=>e.logged_date).filter(Boolean))].sort();
     const dateSet=new Set(dates);
     let current=0, longest=0, run=0, previous=null;
     for(const d of dates){
@@ -2309,18 +2487,31 @@ const PulsePlateApp = (() => {
       list.querySelectorAll('[data-report-status]').forEach(btn=>btn.onclick=async()=>{const card=btn.closest('[data-report]');const {error}=await supabase.rpc('admin_update_report',{p_report_id:Number(card.dataset.report),p_status:btn.dataset.reportStatus,p_note:card.querySelector('[data-report-note]').value||null});if(error)alert(error.message);else await loadReports();});
       list.querySelectorAll('[data-report-suspend],[data-report-ban]').forEach(btn=>btn.onclick=async()=>{const card=btn.closest('[data-report]');await openAccountStatusModal(card.dataset.reportedUserId,btn.hasAttribute('data-report-ban')?'banned':'suspended',Number(card.dataset.report));});
     };
+    const loadTrainerVerifications = async()=>{
+      const list=$('[data-admin-trainer-verifications]'); if(!list) return;
+      const {data,error}=await supabase.rpc('admin_list_trainer_verifications');
+      if(error){list.innerHTML=`<p class="page-copy">${esc(error.message)}</p>`;return;}
+      const rows=data||[];
+      list.innerHTML=rows.length?rows.map(v=>`<article class="admin-flag-item" data-verification-user="${v.user_id}"><div class="feedback-item-head"><strong>${esc(v.display_name||'Unknown')} ${v.status==='approved'?'✓':''}</strong><span>${esc(v.status)}</span></div><div class="feedback-author">${esc(v.email||'Email hidden')}${v.business_name?' · '+esc(v.business_name):''}</div><p>Requested ${formatTimestamp(v.requested_at)}</p><div class="trainer-verification-review"><p><strong>Training experience</strong><br>${esc(v.experience||'Not provided')}</p><p><strong>Credentials</strong><br>${esc(v.credentials||'Not provided')}</p>${v.credential_number?`<p><strong>Credential number</strong><br>${esc(v.credential_number)}</p>`:''}${v.proof_url?`<p><strong>Verification link</strong><br><a href="${esc(v.proof_url)}" target="_blank" rel="noopener noreferrer">${esc(v.proof_url)}</a></p>`:''}${(v.instagram||v.facebook||v.tiktok||v.youtube||v.other_social)?`<p><strong>Social media</strong><br>${[['Instagram',v.instagram],['Facebook',v.facebook],['TikTok',v.tiktok],['YouTube',v.youtube],['Other',v.other_social]].filter(([,value])=>value).map(([label,value])=>`${label}: ${esc(value)}`).join('<br>')}</p>`:''}<p><strong>Resume / professional background</strong><br>${esc(v.professional_background||'Not provided')}</p><p><strong>Applicant statement</strong><br>${esc(v.statement||'Not provided')}</p></div><div class="field"><label>Admin note</label><textarea rows="2" data-verification-note placeholder="Explain the decision or request more evidence."></textarea></div><div class="feedback-actions"><button class="primary-button" data-verification-action="approved">Approve</button><button class="ghost-button" data-verification-action="rejected">Reject</button>${v.status==='approved'?'<button class="danger-button" data-verification-action="revoked">Revoke</button>':''}</div></article>`).join(''):'<p class="empty-state">No trainer verification requests.</p>';
+      list.querySelectorAll('[data-verification-action]').forEach(btn=>btn.onclick=async()=>{const card=btn.closest('[data-verification-user]');const {error}=await supabase.rpc('admin_set_trainer_verification',{p_user_id:card.dataset.verificationUser,p_status:btn.dataset.verificationAction,p_note:card.querySelector('[data-verification-note]').value||null});if(error){alert(error.message);return;}await loadTrainerVerifications();});
+    };
     const loadFeedback=async()=>{const list=$('[data-admin-feedback]');const {data,error}=await supabase.from('feedback').select('id,user_id,category,message,created_at,read_at').order('created_at',{ascending:false});if(error){list.innerHTML=`<p class="page-copy">${esc(error.message)}</p>`;return;}const rows=data||[];list.innerHTML=rows.length?rows.map(f=>`<article class="admin-flag-item"><div class="feedback-item-head"><strong>${esc(f.category)}</strong><span>${formatTimestamp(f.created_at)}</span></div><p>${esc(f.message)}</p><div class="feedback-actions"><button class="ghost-button" data-feedback-delete="${f.id}">Delete feedback</button></div></article>`).join(''):'<p class="empty-state">No feedback yet.</p>';list.querySelectorAll('[data-feedback-delete]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this feedback?'))return;const {error}=await supabase.from('feedback').delete().eq('id',Number(b.dataset.feedbackDelete));if(error)alert(error.message);else await loadFeedback();});};
     async function openAccountStatusModal(targetId, preset=null, reportId=null){
-      const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" type="button" data-close>×</button><p class="eyebrow">Account moderation</p><h2>Suspend or ban account</h2><div class="field"><label>Status</label><select data-status><option value="suspended">Suspended</option><option value="banned">Banned</option><option value="active">Restore active</option></select></div><div class="field"><label>Explanation to user</label><textarea rows="4" data-status-note placeholder="Explain why this action was taken."></textarea></div><div class="field"><label>Suspension end (optional)</label><input type="datetime-local" data-status-until></div><div class="modal-actions"><button class="ghost-button" data-close>Cancel</button><button class="primary-button" data-apply-status>Apply</button></div></section>`;document.body.appendChild(overlay);overlay.querySelector('[data-status]').value=preset||'suspended';overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());overlay.querySelector('[data-apply-status]').onclick=async()=>{const statusValue=overlay.querySelector('[data-status]').value;const note=overlay.querySelector('[data-status-note]').value||null;const until=overlay.querySelector('[data-status-until]').value?new Date(overlay.querySelector('[data-status-until]').value).toISOString():null;const {error}=await supabase.rpc('admin_set_account_status',{p_user_id:targetId,p_status:statusValue,p_note:note,p_until:until});if(error){alert(error.message);return;}if(reportId)await supabase.rpc('admin_update_report',{p_report_id:reportId,p_status:'resolved',p_note:note});overlay.remove();await Promise.all([loadFlags(),loadReports()]);};
+      const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" type="button" data-close>×</button><p class="eyebrow">Account moderation</p><h2>Suspend or ban account</h2><div class="field"><label>Status</label><select data-status><option value="suspended">Suspended</option><option value="banned">Banned</option><option value="active">Restore active</option></select></div><div class="field"><label>Explanation to user</label><textarea rows="4" data-status-note placeholder="Explain why this action was taken."></textarea></div><div class="field"><label>Suspension end (optional)</label><input type="datetime-local" data-status-until></div><div class="modal-actions"><button class="ghost-button" data-close>Cancel</button><button class="primary-button" data-apply-status>Apply</button></div></section>`;document.body.appendChild(overlay);overlay.querySelector('[data-status]').value=preset||'suspended';overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());overlay.querySelector('[data-apply-status]').onclick=async()=>{const statusValue=overlay.querySelector('[data-status]').value;const note=overlay.querySelector('[data-status-note]').value||null;const until=overlay.querySelector('[data-status-until]').value?new Date(overlay.querySelector('[data-status-until]').value).toISOString():null;const {error}=await supabase.rpc('admin_set_account_status',{p_user_id:targetId,p_status:statusValue,p_note:note,p_until:until});if(error){alert(error.message);return;}if(reportId)await supabase.rpc('admin_update_report',{p_report_id:reportId,p_status:'resolved',p_note:note});overlay.remove();await Promise.all([loadFlags(),loadReports(),loadTrainerVerifications()]);};
     }
-    $('[data-admin-refresh]')?.addEventListener('click',async()=>{await Promise.all([loadFlags(),loadReports(),loadFeedback()]);status.textContent='Admin data refreshed.';});
+    const loadAnalytics=async()=>{const list=$('[data-admin-analytics]'); if(!list)return; const {data,error}=await supabase.from('app_events').select('event_name,created_at').order('created_at',{ascending:false}).limit(5000); if(error){list.innerHTML=`<p class="page-copy">${esc(error.message)}</p>`;return;} const rows=data||[]; const counts=new Map(); rows.forEach(e=>counts.set(e.event_name,(counts.get(e.event_name)||0)+1)); const ordered=[...counts.entries()].sort((a,b)=>b[1]-a[1]); list.innerHTML=ordered.length?`<div class="analytics-summary-grid">${ordered.slice(0,12).map(([name,count])=>`<article class="panel analytics-summary-card"><strong>${esc(name)}</strong><span>${count.toLocaleString()} events</span></article>`).join('')}</div><p class="page-copy">Showing the most recent ${rows.length.toLocaleString()} recorded events.</p>`:'<p class="empty-state">No analytics events have been recorded yet.</p>';};
+    const loadErrors=async()=>{const list=$('[data-admin-errors]'); if(!list)return; const {data,error}=await supabase.from('app_error_events').select('id,user_id,page_path,message,stack,context,created_at').order('created_at',{ascending:false}).limit(100); if(error){list.innerHTML=`<p class="page-copy">${esc(error.message)}</p>`;return;} const rows=data||[]; list.innerHTML=rows.length?rows.map(e=>`<article class="admin-flag-item"><div class="feedback-item-head"><strong>${esc(e.page_path||'Unknown page')}</strong><span>${formatTimestamp(e.created_at)}</span></div><p>${esc(e.message)}</p><div class="admin-content-preview"><strong>Version:</strong> ${esc(e.context?.app_version||'Unknown')}<br><strong>Source:</strong> ${esc(e.context?.source||'Runtime')}<br><strong>Stack:</strong><pre class="error-stack">${esc(e.stack||'No stack captured')}</pre></div></article>`).join(''):'<p class="empty-state">No client errors have been reported.</p>';};
+    $('[data-admin-refresh]')?.addEventListener('click',async()=>{await Promise.all([loadFlags(),loadReports(),loadFeedback(),loadTrainerVerifications(),loadErrors(),loadAnalytics()]);status.textContent='Admin data refreshed.';});
     $('[data-admin-scan]')?.addEventListener('click',async()=>{status.textContent='Scanning existing content…';const {error}=await supabase.rpc('admin_scan_existing_content',{p_limit:1000});if(error){status.textContent=error.message;return;}await loadFlags();status.textContent='Existing-content scan complete.';});
     $$('[data-admin-tab]').forEach(tab=>tab.onclick=()=>{$$('[data-admin-tab]').forEach(x=>x.classList.toggle('primary-button',x===tab));$$('[data-admin-tab]').forEach(x=>x.classList.toggle('ghost-button',x!==tab));$$('[data-admin-section]').forEach(sec=>sec.hidden=sec.dataset.adminSection!==tab.dataset.adminTab);});
-    await Promise.all([loadFlags(),loadReports(),loadFeedback()]);
+    await Promise.all([loadFlags(),loadReports(),loadFeedback(),loadTrainerVerifications(),loadErrors(),loadAnalytics()]);
   }
 
   async function renderSocial() {
-    if (messagePollTimer) clearInterval(messagePollTimer);
+    if (messageRealtimeChannel) { try { await supabase.removeChannel(messageRealtimeChannel); } catch {} messageRealtimeChannel = null; }
+    if (mealRealtimeChannel) { try { await supabase.removeChannel(mealRealtimeChannel); } catch {} mealRealtimeChannel = null; }
+    conversationBeforeCursor = null;
+    conversationHasOlder = false;
     const page = document.body.dataset.page || 'social';
     const search = $('[data-friend-search]');
     const peopleList = $('[data-people-list]');
@@ -2353,6 +2544,8 @@ const PulsePlateApp = (() => {
       renderPeople(search?.value || '');
       renderFriendsList();
       renderFriendSelectors();
+      renderFriendRequests();
+      renderNutritionShares().catch(console.error);
       wireSocialButtons(profile);
     };
 
@@ -2364,44 +2557,51 @@ const PulsePlateApp = (() => {
       };
     }
 
+    socialCurrentProfile = profile;
     await loadSocialData('');
     renderPeople(search?.value || '');
     renderFriendsList();
     renderFriendSelectors();
+    renderFriendRequests();
     renderSharingControls(profile);
     await renderMessages();
     await renderSharedMeals(profile);
+    await renderNutritionShares();
     wireSocialButtons(profile);
 
     if (page === 'friends-add') {
-      // Add-friends page is search-driven; no message polling is needed.
+      // Add-friends page is search-driven; no realtime subscription is needed.
       return;
     }
 
-    if (page === 'friends-messages') {
-      messagePollTimer = setInterval(async () => {
-        if (selectedFriendId) await renderMessages().catch(console.error);
-      }, 3000);
-      return;
+    // Messaging uses a tiny message_events realtime payload, then refreshes the
+    // bounded conversation RPC. The message body itself is never exposed through
+    // Realtime, which preserves the age-aware moderation boundary.
+    if (page === 'friends-messages' || page === 'social') {
+      messageRealtimeChannel = supabase.channel(`macrosync-message-events-${user.id}-${Date.now()}`)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'message_events', filter: `recipient_id=eq.${user.id}` }, payload => {
+          const row = payload.new || {};
+          if (selectedFriendId && row.sender_id === selectedFriendId) renderMessages().catch(console.error);
+        })
+        .subscribe();
     }
 
-    if (page === 'friends-meals') {
-      messagePollTimer = setInterval(async () => {
-        if (selectedMealFriendId) await renderSharedMeals(profile).catch(console.error);
-      }, 3000);
-      return;
+    // Meal updates are user-owned rows. Shared-meal viewers can still use the
+    // page's explicit refresh/navigation; removing the 3-second global poll is
+    // substantially cheaper at scale.
+    if (page === 'friends-meals' || page === 'social') {
+      mealRealtimeChannel = supabase.channel(`macrosync-meal-updates-${user.id}-${Date.now()}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'meals', filter: `user_id=eq.${user.id}` }, () => {
+          if (selectedMealFriendId) renderSharedMeals(profile).catch(console.error);
+        })
+        .subscribe();
     }
-
-    messagePollTimer = setInterval(async () => {
-      if (selectedFriendId) await renderMessages().catch(console.error);
-      if (selectedMealFriendId) await renderSharedMeals(profile).catch(console.error);
-    }, 3000);
   }
 
   async function loadSocialData(query='') {
     const [{ data: people, error: peopleError }, { data: connections, error: connectionsError }] = await Promise.all([
       supabase.rpc('search_people', { p_query: query || '' }),
-      supabase.from('friend_connections').select('*').or(`requester_id.eq.${user.id},addressee_id.eq.${user.id}`).order('created_at', { ascending: false })
+      supabase.rpc('get_my_friend_connections')
     ]);
     if (peopleError) throw peopleError;
     if (connectionsError) throw connectionsError;
@@ -2442,6 +2642,142 @@ const PulsePlateApp = (() => {
     list.innerHTML = renderGroup('trainer','Personal trainers') + renderGroup('user','Personal');
   }
 
+  function renderFriendRequests() {
+    const list = $('[data-friend-requests]');
+    if (!list) return;
+    const incoming = socialConnections
+      .filter(c => c.status === 'pending' && c.addressee_id === user.id)
+      .map(c => ({ connection: c, person: personById(c.requester_id) }))
+      .filter(x => x.connection);
+    if (!incoming.length) {
+      list.innerHTML = '<p class="page-copy">No pending friend requests.</p>';
+      return;
+    }
+    list.innerHTML = incoming.map(({connection, person}) => {
+      const name = person?.display_name || 'MacroSync User';
+      const role = person?.role || 'user';
+      const expiry = connection.expires_at ? `Expires ${formatTimestamp(connection.expires_at)}` : 'Expires after 7 days';
+      return `<article class="friend-request-card"><div><strong>${escapeHtml(name)}</strong><p>${escapeHtml(roleLabel(role))} · ${escapeHtml(expiry)}</p></div><div class="social-request-actions"><button class="primary-button" type="button" data-accept-request="${connection.id}">Accept</button><button class="ghost-button danger-button" type="button" data-reject-request="${connection.id}">Reject</button></div></article>`;
+    }).join('');
+  }
+
+  function nutritionTotals(items) {
+    return (items || []).reduce((a, i) => ({
+      calories: a.calories + Number(i.calories || 0),
+      protein: a.protein + Number(i.protein || 0),
+      carbs: a.carbs + Number(i.carbs || 0),
+      fat: a.fat + Number(i.fat || 0)
+    }), {calories:0,protein:0,carbs:0,fat:0});
+  }
+
+  function nutritionSnapshotLabel(type) {
+    return ({food:'Food', meal:'Meal', recipe:'Recipe', day_plan:'Day plan'})[type] || 'Nutrition';
+  }
+
+  async function loadNutritionShareChoices(type) {
+    if (type === 'recipe') {
+      const {data,error}=await supabase.from('recipes').select('*, recipe_items(*)').eq('user_id',user.id).order('name');
+      if(error) throw error;
+      return (data||[]).map(r=>({id:r.id,title:r.name,snapshot:{name:r.name,servings:r.servings,items:r.recipe_items||[]}}));
+    }
+    if (type === 'meal') {
+      const {data,error}=await supabase.from('saved_meals').select('*, saved_meal_items(*)').eq('user_id',user.id).order('name');
+      if(error) throw error;
+      return (data||[]).map(m=>({id:m.id,title:m.name,snapshot:{name:m.name,items:m.saved_meal_items||[]}}));
+    }
+    if (type === 'food') {
+      const {data,error}=await supabase.from('food_entries').select('*').eq('user_id',user.id).eq('logged_date',dateKey(selectedDate)).order('created_at',{ascending:false}).limit(50);
+      if(error) throw error;
+      const seen=new Set();
+      return (data||[]).filter(f=>{const key=`${f.food_name}|${f.serving}|${f.calories}|${f.protein}|${f.carbs}|${f.fat}`;if(seen.has(key))return false;seen.add(key);return true;}).map(f=>({id:f.id,title:f.food_name,snapshot:{food_name:f.food_name,serving:f.serving,fdc_id:f.fdc_id,calories:f.calories,protein:f.protein,carbs:f.carbs,fat:f.fat}}));
+    }
+    const {data,error}=await supabase.from('food_entries').select('*').eq('user_id',user.id).eq('logged_date',dateKey(selectedDate)).order('created_at');
+    if(error) throw error;
+    const entries=data||[];
+    const groups={};
+    for(const entry of entries){const key=entry.meal||'Meal';(groups[key] ||= []).push(entry);}
+    return Object.entries(groups).map(([name,items])=>({id:null,title:name,snapshot:{date:dateKey(selectedDate),meals:[{name,items}],totals:nutritionTotals(items)}}));
+  }
+
+  async function openNutritionShareModal() {
+    if (!selectedFriendId) { alert('Select a friend first.'); return; }
+    const friend=personById(selectedFriendId);
+    if (!friend) { alert('Select an accepted friend first.'); return; }
+    const overlay=document.createElement('div'); overlay.className='modal-overlay';
+    overlay.innerHTML=`<section class="modal-card nutrition-share-modal" role="dialog" aria-modal="true" aria-labelledby="nutritionShareTitle"><button class="modal-close" data-close-share type="button">×</button><p class="eyebrow">Share nutrition</p><h2 id="nutritionShareTitle">Send something to ${escapeHtml(friend.display_name)}</h2><p class="page-copy">This sends a suggestion. ${escapeHtml(friend.display_name)} must accept it before they can choose to add or save it.</p><div class="field"><label for="nutritionShareType">What are you sending?</label><select id="nutritionShareType" data-nutrition-share-type><option value="food">Food</option><option value="meal">Saved meal</option><option value="recipe">Recipe</option><option value="day_plan">Day plan</option></select></div><div class="field"><label for="nutritionShareChoice">Choose an item</label><select id="nutritionShareChoice" data-nutrition-share-choice><option value="">Loading…</option></select></div><div class="field"><label for="nutritionShareNote">Optional note</label><textarea id="nutritionShareNote" data-nutrition-share-note rows="3" placeholder="Add a note about why you are sharing this."></textarea></div><div class="modal-actions"><button class="ghost-button" data-close-share type="button">Cancel</button><button class="primary-button" data-send-nutrition-share type="button">Send</button></div></section>`;
+    document.body.appendChild(overlay);
+    const typeSelect=overlay.querySelector('[data-nutrition-share-type]'); const choiceSelect=overlay.querySelector('[data-nutrition-share-choice]');
+    const populate=async()=>{choiceSelect.innerHTML='<option value="">Loading…</option>';try{const choices=await loadNutritionShareChoices(typeSelect.value);choiceSelect.innerHTML=choices.length?choices.map((x,i)=>`<option value="${i}">${escapeHtml(x.title)}</option>`).join(''):'<option value="">No items available</option>';choiceSelect._choices=choices;}catch(e){choiceSelect.innerHTML=`<option value="">${escapeHtml(e.message||'Could not load items.')}</option>`;}};
+    overlay.querySelectorAll('[data-close-share]').forEach(b=>b.onclick=()=>overlay.remove());
+    typeSelect.onchange=populate; await populate();
+    overlay.querySelector('[data-send-nutrition-share]').onclick=async()=>{const choices=choiceSelect._choices||[];const choice=choices[Number(choiceSelect.value)];if(!choice){alert('Choose an item first.');return;}const note=overlay.querySelector('[data-nutrition-share-note]').value.trim()||null;const {error}=await supabase.rpc('create_nutrition_share',{p_recipient_id:selectedFriendId,p_item_type:typeSelect.value,p_title:choice.title,p_note:note,p_snapshot:choice.snapshot,p_source_id:choice.id,p_attach_to_message:true});if(error){alert(error.message);return;}overlay.remove();await renderMessages();await renderNutritionShares();};
+  }
+
+  function nutritionShareCard(share, senderName, inThread=false) {
+    const snap=share.snapshot||{}; const totals=snap.totals||nutritionTotals(snap.items||[]); const status=share.status;
+    let detail='';
+    if(share.item_type==='food'){detail=`${escapeHtml(snap.serving||'')} · ${moneyless(snap.calories)} cal · P ${moneyless(snap.protein)}g · C ${moneyless(snap.carbs)}g · F ${moneyless(snap.fat)}g`;}
+    else if(share.item_type==='recipe'){detail=`${Array.isArray(snap.items)?snap.items.length:0} ingredient${Array.isArray(snap.items)&&snap.items.length===1?'':'s'} · ${moneyless(Number(totals.calories)/(Number(snap.servings)||1))} cal/serving`;}
+    else if(share.item_type==='meal'){detail=`${Array.isArray(snap.items)?snap.items.length:0} food${Array.isArray(snap.items)&&snap.items.length===1?'':'s'} · ${moneyless(totals.calories)} cal`;}
+    else {detail=`${Array.isArray(snap.meals)?snap.meals.length:0} meal${Array.isArray(snap.meals)&&snap.meals.length===1?'':'s'} · ${moneyless(totals.calories)} cal`;
+    }
+    const incoming=share.recipient_id===user.id;
+    const pending=incoming && status==='pending';
+    const accepted=incoming && status==='accepted';
+    const actions=pending?`<div class="nutrition-share-actions"><button class="primary-button" type="button" data-accept-nutrition-share="${share.id}">Accept</button><button class="ghost-button danger-button" type="button" data-decline-nutrition-share="${share.id}">Decline</button></div>`:accepted?`<div class="nutrition-share-actions"><button class="primary-button" type="button" data-use-nutrition-share="${share.id}">Use this</button></div>`:'';
+    const statusText=status==='pending'?(incoming?'Waiting for your decision':'Waiting for recipient'):status.charAt(0).toUpperCase()+status.slice(1);
+    return `<article class="nutrition-share-card ${pending?'pending':''}"><div class="nutrition-share-head"><span class="role-badge">${escapeHtml(nutritionSnapshotLabel(share.item_type))}</span><span>${escapeHtml(statusText)}</span></div><h3>${escapeHtml(share.title)}</h3><p>${escapeHtml(senderName ? `${senderName} shared this with you.` : '')}</p><div class="nutrition-share-summary"><strong>${detail}</strong></div>${share.note?`<p class="nutrition-share-note">${escapeHtml(share.note)}</p>`:''}${actions}</article>`;
+  }
+
+  async function fetchNutritionSharesForMessages(rows) {
+    const ids=(rows||[]).map(m=>m.id).filter(Boolean); if(!ids.length)return [];
+    const {data,error}=await supabase.from('nutrition_shares').select('*').in('message_id',ids); if(error) throw error; return data||[];
+  }
+
+  async function renderNutritionShares() {
+    const list=$('[data-nutrition-shares-list]'); if(!list)return;
+    const {data,error}=await supabase.rpc('get_my_nutrition_shares'); if(error){list.innerHTML=`<p class="page-copy">${escapeHtml(error.message)}</p>`;return;}
+    const rows=(data||[]).filter(s=>s.recipient_id===user.id).slice(0,30);
+    if(!rows.length){list.innerHTML='<p class="page-copy">Nothing has been shared with you yet.</p>';return;}
+    const names={}; for(const r of rows){names[r.sender_id]=personById(r.sender_id)?.display_name||'A friend';}
+    list.innerHTML=rows.map(r=>nutritionShareCard(r,names[r.sender_id])).join(''); bindNutritionShareActions(list);
+  }
+
+  function bindNutritionShareActions(scope=document) {
+    scope.querySelectorAll('[data-accept-nutrition-share]').forEach(b=>b.onclick=async()=>{const {error}=await supabase.rpc('accept_nutrition_share',{p_share_id:Number(b.dataset.acceptNutritionShare)});if(error){alert(error.message);return;}await renderNutritionShares();await renderMessages();});
+    scope.querySelectorAll('[data-decline-nutrition-share]').forEach(b=>b.onclick=async()=>{const {error}=await supabase.rpc('decline_nutrition_share',{p_share_id:Number(b.dataset.declineNutritionShare)});if(error){alert(error.message);return;}await renderNutritionShares();await renderMessages();});
+    scope.querySelectorAll('[data-use-nutrition-share]').forEach(b=>b.onclick=()=>openNutritionUseModal(Number(b.dataset.useNutritionShare)));
+  }
+
+  async function openNutritionUseModal(shareId) {
+    const {data,error}=await supabase.from('nutrition_shares').select('*').eq('id',shareId).eq('recipient_id',user.id).single(); if(error){alert(error.message);return;}
+    if(data.status!=='accepted'){alert('Accept this item before using it.');return;}
+    const options=data.item_type==='recipe'?'<option value="save_recipe">Save to my recipes</option><option value="log_recipe">Add recipe to today</option>':data.item_type==='meal'?'<option value="save_meal">Save as a meal</option><option value="log_meal">Add meal to today</option>':data.item_type==='day_plan'?'<option value="log_day">Add day plan to today</option>':'<option value="log_food">Add food to today</option>';
+    const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close-use type="button">×</button><p class="eyebrow">Use shared nutrition</p><h2>${escapeHtml(data.title)}</h2><p class="page-copy">Choose what you want MacroSync to do. Accepting the share never changes your log by itself.</p><div class="field"><label>Action</label><select data-use-action>${options}</select></div><div class="modal-actions"><button class="ghost-button" data-close-use type="button">Cancel</button><button class="primary-button" data-confirm-use type="button">Continue</button></div></section>`;document.body.appendChild(overlay);overlay.querySelectorAll('[data-close-use]').forEach(b=>b.onclick=()=>overlay.remove());overlay.querySelector('[data-confirm-use]').onclick=async()=>{try{await applyNutritionShare(data,overlay.querySelector('[data-use-action]').value);overlay.remove();await renderNutritionShares();await renderMessages();if(document.body.dataset.page==='log')await renderPage();}catch(e){alert(e.message||String(e));}};
+  }
+
+  async function applyNutritionShare(share, action) {
+    const snap=share.snapshot||{};
+    if(action==='log_food'){
+      const f=snap; const {error}=await supabase.from('food_entries').insert({user_id:user.id,logged_date:dateKey(selectedDate),meal:userMeals[0]?.name||'Meal 1',food_name:f.food_name||share.title,serving:f.serving||'1 serving',fdc_id:f.fdc_id||null,calories:Number(f.calories||0),protein:Number(f.protein||0),carbs:Number(f.carbs||0),fat:Number(f.fat||0)});if(error)throw error;return;
+    }
+    if(action==='log_meal'){
+      const mealName=userMeals[0]?.name||'Meal 1'; const rows=(snap.items||[]).map(i=>({user_id:user.id,logged_date:dateKey(selectedDate),meal:mealName,food_name:i.food_name,serving:i.serving,fdc_id:i.fdc_id||null,calories:Number(i.calories||0),protein:Number(i.protein||0),carbs:Number(i.carbs||0),fat:Number(i.fat||0)})); if(!rows.length)throw new Error('This shared meal has no foods.'); const {error}=await supabase.from('food_entries').insert(rows);if(error)throw error;return;
+    }
+    if(action==='log_day'){
+      const mealNameBase=userMeals[0]?.name||'Meal 1'; const rows=[]; for(const meal of snap.meals||[]){for(const i of meal.items||[]){rows.push({user_id:user.id,logged_date:dateKey(selectedDate),meal:meal.name||mealNameBase,food_name:i.food_name,serving:i.serving,fdc_id:i.fdc_id||null,calories:Number(i.calories||0),protein:Number(i.protein||0),carbs:Number(i.carbs||0),fat:Number(i.fat||0)});}} if(!rows.length)throw new Error('This day plan has no foods.'); const {error}=await supabase.from('food_entries').insert(rows);if(error)throw error;return;
+    }
+    if(action==='save_meal'){
+      const {data:meal,error}=await supabase.from('saved_meals').insert({user_id:user.id,name:share.title}).select('*').single();if(error)throw error; const rows=(snap.items||[]).map(i=>({saved_meal_id:meal.id,user_id:user.id,food_name:i.food_name,serving:i.serving,fdc_id:i.fdc_id||null,calories:Number(i.calories||0),protein:Number(i.protein||0),carbs:Number(i.carbs||0),fat:Number(i.fat||0)}));if(rows.length){const {error:e}=await supabase.from('saved_meal_items').insert(rows);if(e)throw e;}return;
+    }
+    if(action==='save_recipe'){
+      const {data:recipe,error}=await supabase.from('recipes').insert({user_id:user.id,name:share.title,servings:Number(snap.servings||1)}).select('*').single();if(error)throw error; const rows=(snap.items||[]).map(i=>({recipe_id:recipe.id,user_id:user.id,food_name:i.food_name,serving:i.serving,fdc_id:i.fdc_id||null,calories:Number(i.calories||0),protein:Number(i.protein||0),carbs:Number(i.carbs||0),fat:Number(i.fat||0)}));if(rows.length){const {error:e}=await supabase.from('recipe_items').insert(rows);if(e)throw e;}return;
+    }
+    if(action==='log_recipe'){
+      const total=nutritionTotals(snap.items||[]);const servings=Number(snap.servings||1);const {error}=await supabase.from('food_entries').insert({user_id:user.id,logged_date:dateKey(selectedDate),meal:userMeals[0]?.name||'Meal 1',food_name:share.title,serving:'1 serving',fdc_id:null,calories:total.calories/servings,protein:total.protein/servings,carbs:total.carbs/servings,fat:total.fat/servings});if(error)throw error;
+    }
+  }
+
   function renderPersonCard(person) {
     const connection = connectionFor(person.id);
     let action = `<button class="ghost-button" type="button" data-add-person="${person.id}">Add friend</button>`;
@@ -2450,7 +2786,16 @@ const PulsePlateApp = (() => {
     } else if (connection?.status === 'pending') {
       action = connection.requester_id === user.id
         ? `<button class="ghost-button" type="button" disabled>Request sent</button>`
-        : `<button class="primary-button" type="button" data-accept-request="${connection.id}" data-person-id="${person.id}">Accept</button>`;
+        : `<div class="social-request-actions"><button class="primary-button" type="button" data-accept-request="${connection.id}" data-person-id="${person.id}">Accept</button><button class="ghost-button danger-button" type="button" data-reject-request="${connection.id}">Reject</button></div>`;
+    } else if (connection?.status === 'declined' || connection?.status === 'expired') {
+      action = `<button class="ghost-button" type="button" data-add-person="${person.id}">Send again</button>`;
+    }
+    if (person.role === 'user' && socialCurrentProfile?.role === 'trainer') {
+      action = connection?.status === 'accepted'
+        ? `<button class="primary-button" type="button" data-select-friend="${person.id}">Open</button>`
+        : connection?.requester_id === user.id && connection?.status === 'pending'
+          ? `<button class="ghost-button" type="button" disabled>Request sent</button>`
+          : `<span class="page-copy">The user must send the friend request.</span>`;
     }
     return `<article class="friend-card"><div class="friend-top"><div class="profile-strip"><span class="avatar">${escapeHtml((person.display_name || 'P').charAt(0).toUpperCase())}</span><span><strong>${escapeHtml(person.display_name || 'MacroSync User')}</strong><p>${escapeHtml(person.email || 'Email unavailable')}</p>${person.business_name ? `<p>${escapeHtml(person.business_name)}</p>` : ''}</span></div><span class="role-badge ${person.role === 'trainer' ? 'trainer' : ''}">${roleLabel(person.role)}</span></div><div class="social-card-actions">${action}</div></article>`;
   }
@@ -2506,20 +2851,27 @@ const PulsePlateApp = (() => {
 
   async function wireSocialButtons(profile) {
     document.querySelectorAll('[data-add-person]').forEach(btn => btn.onclick = async () => {
-      const addressee_id = btn.dataset.addPerson;
-      const { error } = await supabase.from('friend_connections').insert({ requester_id: user.id, addressee_id, status: 'pending', share_meals: false, requester_share_meals: false, addressee_share_meals: false });
+      const { error } = await supabase.rpc('send_friend_request', { p_addressee_id: btn.dataset.addPerson });
       if (error) { alert(error.message); return; }
       await renderSocial();
     });
 
     document.querySelectorAll('[data-accept-request]').forEach(btn => btn.onclick = async () => {
-      const { error } = await supabase.from('friend_connections').update({ status: 'accepted' }).eq('id', btn.dataset.acceptRequest).eq('addressee_id', user.id);
+      const { error } = await supabase.rpc('accept_friend_request', { p_connection_id: Number(btn.dataset.acceptRequest) });
+      if (error) { alert(error.message); return; }
+      await renderSocial();
+    });
+
+    document.querySelectorAll('[data-reject-request]').forEach(btn => btn.onclick = async () => {
+      const { error } = await supabase.rpc('reject_friend_request', { p_connection_id: Number(btn.dataset.rejectRequest) });
       if (error) { alert(error.message); return; }
       await renderSocial();
     });
 
     document.querySelectorAll('[data-select-friend]').forEach(btn => btn.onclick = async () => {
       selectedFriendId = btn.dataset.selectFriend;
+      conversationBeforeCursor = null;
+      conversationHasOlder = false;
       selectedMealFriendId = selectedMealFriendId || selectedFriendId;
       renderFriendsList();
       renderFriendSelectors();
@@ -2530,22 +2882,69 @@ const PulsePlateApp = (() => {
     });
 
     if ($('[data-send-message]')) $('[data-send-message]').onclick = sendMessage;
+    if ($('[data-share-nutrition]')) $('[data-share-nutrition]').onclick = openNutritionShareModal;
     if ($('[data-message-text]')) $('[data-message-text]').onkeydown = e => { if (e.key === 'Enter') sendMessage(); };
   }
 
-  async function renderMessages() {
+  async function renderMessages(loadOlder = false) {
     const thread = $('[data-message-thread]');
     if (!thread || !selectedFriendId) {
       if (thread) thread.innerHTML = '<p class="page-copy">Select a friend to view messages.</p>';
       return;
     }
-    const { data, error } = await supabase.rpc('get_conversation_messages', { p_friend_id: selectedFriendId });
+
+    const args = { p_friend_id: selectedFriendId, p_limit: 50 };
+    if (loadOlder && conversationBeforeCursor) {
+      args.p_before = conversationBeforeCursor.created_at;
+      args.p_before_id = conversationBeforeCursor.id;
+    }
+    const { data, error } = await supabase.rpc('get_conversation_messages', args);
     if (error) throw error;
+
+    const rows = data || [];
+    conversationHasOlder = rows.length >= 50;
+    if (!loadOlder) {
+      conversationBeforeCursor = rows[0] ? { id: rows[0].id, created_at: rows[0].created_at } : null;
+      const shares = await fetchNutritionSharesForMessages(rows);
+      const shareByMessage = new Map(shares.map(s => [s.message_id, s]));
+      thread.innerHTML = rows.length
+        ? `${conversationHasOlder ? '<button type="button" class="ghost-button" data-load-older-messages>Load older messages</button>' : ''}${rows.map(m => messageMarkup(m, shareByMessage.get(m.id))).join('')}`
+        : '<p class="page-copy">No messages yet.</p>';
+      thread.scrollTop = thread.scrollHeight;
+    } else if (rows.length) {
+      const oldScrollHeight = thread.scrollHeight;
+      const oldScrollTop = thread.scrollTop;
+      conversationBeforeCursor = { id: rows[0].id, created_at: rows[0].created_at };
+      const button = thread.querySelector('[data-load-older-messages]');
+      const shares = await fetchNutritionSharesForMessages(rows);
+      const shareByMessage = new Map(shares.map(s => [s.message_id, s]));
+      const html = rows.map(m => messageMarkup(m, shareByMessage.get(m.id))).join('');
+      if (button) button.insertAdjacentHTML('afterend', html); else thread.insertAdjacentHTML('afterbegin', html);
+      if (!conversationHasOlder) thread.querySelector('[data-load-older-messages]')?.remove();
+      thread.scrollTop = oldScrollTop + (thread.scrollHeight - oldScrollHeight);
+    } else if (loadOlder) {
+      thread.querySelector('[data-load-older-messages]')?.remove();
+    }
+
+    thread.querySelector('[data-load-older-messages]')?.addEventListener('click', () => renderMessages(true).catch(console.error));
+    bindMessageActions(thread);
     setText('[data-chat-title]', personById(selectedFriendId)?.display_name || 'Select a friend');
-    thread.innerHTML = data?.length
-      ? data.map(m => `<article class="message-bubble ${m.sender_id === user.id ? 'mine' : ''}"><div>${escapeHtml(m.body)}</div><p>${formatTimestamp(m.created_at)}</p>${m.sender_id === user.id ? `<button type="button" class="text-button danger-button message-delete-button" data-delete-message="${m.id}">Delete</button>` : `<button type="button" class="text-button danger-button" data-report-message="${m.id}">Report</button>`}</article>`).join('')
-      : '<p class="page-copy">No messages yet.</p>';
-    thread.querySelectorAll('[data-report-message]').forEach(button => { button.onclick = async () => { const reason = prompt('Why are you reporting this message?'); if (!reason?.trim()) return; const { error } = await supabase.rpc('report_message', { p_message_id: Number(button.dataset.reportMessage), p_reason: reason.trim() }); if (error) alert(error.message); else { alert('Report submitted to MacroSync administrators.'); button.disabled = true; button.textContent = 'Reported'; } }; });
+  }
+
+  function messageMarkup(m, share=null) {
+    const shareMarkup = share ? nutritionShareCard(share, personById(share.sender_id)?.display_name || (share.sender_id===user.id ? 'You' : 'A friend'), true) : '';
+    return `<article class="message-bubble ${m.sender_id === user.id ? 'mine' : ''}"><div>${escapeHtml(m.body)}</div>${shareMarkup}<p>${formatTimestamp(m.created_at)}</p>${m.sender_id === user.id ? `<button type="button" class="text-button danger-button message-delete-button" data-delete-message="${m.id}">Delete</button>` : `<button type="button" class="text-button danger-button" data-report-message="${m.id}">Report</button>`}</article>`;
+  }
+
+  function bindMessageActions(thread) {
+    thread.querySelectorAll('[data-report-message]').forEach(button => {
+      button.onclick = async () => {
+        const reason = prompt('Why are you reporting this message?');
+        if (!reason?.trim()) return;
+        const { error } = await supabase.rpc('report_message', { p_message_id: Number(button.dataset.reportMessage), p_reason: reason.trim() });
+        if (error) alert(error.message); else { alert('Report submitted to MacroSync administrators.'); button.disabled = true; button.textContent = 'Reported'; }
+      };
+    });
     thread.querySelectorAll('[data-delete-message]').forEach(button => {
       button.onclick = async () => {
         if (!confirm('Delete this message permanently?')) return;
@@ -2555,7 +2954,6 @@ const PulsePlateApp = (() => {
         await renderMessages();
       };
     });
-    thread.scrollTop = thread.scrollHeight;
   }
 
   async function sendMessage() {

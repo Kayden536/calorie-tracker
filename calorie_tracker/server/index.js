@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import fs from "node:fs";
+import Redis from "ioredis";
 
 dotenv.config({ path: path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".env") });
 
@@ -11,6 +12,16 @@ const app = express();
 const port = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: "1mb" }));
+
+app.disable('x-powered-by');
+app.use((req,res,next)=>{
+  res.setHeader('X-Content-Type-Options','nosniff');
+  res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options','SAMEORIGIN');
+  next();
+});
+
+app.get('/', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'landing.html')));
 app.use(express.static(path.join(__dirname, "..", "public")));
 
 const USDA_API_KEY = String(process.env.USDA_API_KEY || "").trim();
@@ -27,12 +38,36 @@ const COFID_DATA_PATH = COFID_DATA_PATH_CONFIG
 const SUPABASE_URL = String(process.env.SUPABASE_URL || "").trim();
 const SUPABASE_PUBLISHABLE_KEY = String(process.env.SUPABASE_PUBLISHABLE_KEY || "").trim();
 
-// Lightweight in-process rate limiting for public API endpoints. For multi-instance deployments,
-// move this counter to a shared store such as Redis.
+// Shared rate limiting when REDIS_URL is configured; bounded in-process fallback
+// keeps a single-instance deployment functional. This avoids a per-instance
+// limiter becoming a horizontal-scaling bypass.
 const rateBuckets = new Map();
+const redis = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 1, enableOfflineQueue: false }) : null;
+if (redis) redis.on('error', error => console.error('Redis rate-limit error:', error.message));
+
+setInterval(() => {
+  const cutoff = Date.now() - 15 * 60 * 1000;
+  for (const [key, bucket] of rateBuckets) if (bucket.start < cutoff) rateBuckets.delete(key);
+}, 5 * 60 * 1000).unref();
+
 function rateLimit(max, windowMs) {
-  return (req, res, next) => {
-    const key = `${req.ip}:${req.path}`; const now = Date.now();
+  return async (req, res, next) => {
+    const key = `macrosync:rate:${req.ip}:${req.path}`;
+    if (redis) {
+      try {
+        if (redis.status === 'wait') await redis.connect();
+        const bucket = Math.floor(Date.now() / windowMs);
+        const redisKey = `${key}:${bucket}`;
+        const count = await redis.incr(redisKey);
+        if (count === 1) await redis.expire(redisKey, Math.ceil(windowMs / 1000) + 1);
+        if (count > max) return res.status(429).json({ error: "Too many requests. Please wait and try again." });
+        return next();
+      } catch (error) {
+        console.warn('Redis unavailable; using local rate limiter:', error.message);
+      }
+    }
+
+    const now = Date.now();
     let b = rateBuckets.get(key);
     if (!b || now - b.start >= windowMs) b = { start: now, count: 0 };
     b.count++; rateBuckets.set(key, b);
@@ -358,7 +393,7 @@ app.get("/api/config", (_req, res) => {
   if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
     return res.status(500).json({ error: "Supabase configuration is missing." });
   }
-  res.json({ supabaseUrl: SUPABASE_URL, supabasePublishableKey: SUPABASE_PUBLISHABLE_KEY });
+  res.json({ supabaseUrl: SUPABASE_URL, supabasePublishableKey: SUPABASE_PUBLISHABLE_KEY, appVersion: '0.56.0' });
 });
 
 app.get("/api/health", (_req, res) => {

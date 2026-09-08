@@ -24,15 +24,14 @@
     </aside>
     <main class="main-content">
       <header class="topbar">
-        <div><p class="eyebrow">Preferences</p><h1>Settings</h1><p class="page-copy">Manage your MacroSync account and send feedback.</p></div>
+        <div><p class="eyebrow">Preferences</p><h1>Settings</h1><p class="page-copy">Manage your MacroSync account, privacy, and feedback.</p><span class="app-version" data-app-version>MacroSync v0.56.0</span></div>
       </header>
       <div class="content-grid settings-page-grid">
         <aside class="panel settings-nav-panel">
           <p class="eyebrow">Settings</p>
           <div class="settings-subnav">
-            <button class="active" type="button" data-settings-tab="account">Settings</button>
-            <button type="button" data-settings-tab="trainer">Trainer profile</button><button type="button" data-settings-tab="feedback">Send feedback</button>
-            <button type="button" data-settings-tab="privacy">Privacy</button>
+            <button class="active" type="button" data-settings-tab="account">Settings</button><button type="button" data-settings-tab="feedback">Send feedback</button>
+            <button type="button" data-settings-tab="privacy">Privacy</button><a class="settings-subnav-link" href="trainer-settings.html">Trainer settings</a>
           </div>
         </aside>
         <section class="panel settings-section" data-settings-section="account">
@@ -63,7 +62,6 @@
             <small class="page-copy">MyFitnessPal currently exports nutrition, progress, and exercise data as separate CSV files inside a ZIP. Choose the <strong>Your Nutrition</strong> CSV when importing meal history.</small>
           </div>
         </section>
-        <section class="panel settings-section" data-trainer-profile-settings hidden></section>
         <section class="panel settings-section" data-settings-section="privacy" hidden>
           <div class="panel-header"><div><p class="eyebrow">Privacy & data</p><h2>Privacy settings</h2><p class="page-copy">MacroSync only uses the information needed to operate your account and apply age-appropriate content rules.</p></div></div>
           <label class="toggle-row"><input type="checkbox" data-email-search-enabled><span><strong>Allow people to find me by email</strong><small>Turn this off to remove your email from friend search. Your display name can still be searched.</small></span></label>
@@ -74,7 +72,7 @@
           <div class="panel-header"><div><p class="eyebrow">Feedback</p><h2>Tell us what you think</h2></div></div>
           <form class="settings-stack" data-feedback-form>
             <div class="field"><label for="feedbackCategory">Type</label><select id="feedbackCategory"><option value="general">General feedback</option><option value="bug">Bug report</option><option value="feature">Feature request</option><option value="other">Other</option></select></div>
-            <div class="field"><label for="feedbackMessage">Feedback</label><textarea id="feedbackMessage" rows="8" maxlength="4000" placeholder="Tell us what happened or what you would like to see…" required></textarea></div>
+            <div class="field"><label for="feedbackMessage">Feedback or support request</label><textarea id="feedbackMessage" rows="8" maxlength="4000" placeholder="Tell us what happened or what you would like to see…" required></textarea></div>
             <button class="primary-button" type="submit">Send feedback</button><p class="settings-status" data-feedback-status role="status"></p>
           </form>
         </section>
