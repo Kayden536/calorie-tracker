@@ -2342,4 +2342,4 @@ body.light-theme .cross-source-card,body.light-theme .cross-reference-summary,bo
 .compact-toggle{margin:0;min-height:44px}
 .recent-food-card .food-card-actions{align-self:center}
 .calendar-day.disabled{opacity:.45;cursor:not-allowed}
-@media(max-width:700px){.logging-controls{grid-template-columns:1fr}.food-search-mode{display:grid;grid-template-columns:1fr 1fr}.food-search-mode .food-source-tab{width:100%}}
+@media(max-width:700px){.logging-controls{grid-template-columns:1fr}.food-search-mode{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.food-search-mode .food-source-tab{width:100%;padding-left:8px;padding-right:8px}}

@@ -393,7 +393,7 @@ app.get("/api/config", (_req, res) => {
   if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
     return res.status(500).json({ error: "Supabase configuration is missing." });
   }
-  res.json({ supabaseUrl: SUPABASE_URL, supabasePublishableKey: SUPABASE_PUBLISHABLE_KEY, appVersion: '0.59.0' });
+  res.json({ supabaseUrl: SUPABASE_URL, supabasePublishableKey: SUPABASE_PUBLISHABLE_KEY, appVersion: '0.59.1' });
 });
 
 app.get("/api/health", (_req, res) => {

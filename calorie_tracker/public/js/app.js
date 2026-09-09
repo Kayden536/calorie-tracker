@@ -1,4 +1,4 @@
-const MACROSYNC_VERSION = '0.59.0';
+const MACROSYNC_VERSION = '0.60.0';
 let telemetryDisabled = false;
 let supabaseTelemetryClient = null;
 
@@ -1084,36 +1084,39 @@ const PulsePlateApp = (() => {
       sourceButtons.forEach(b => b.classList.toggle('active', b.dataset.foodSource === source));
       if (sourceHint) sourceHint.textContent = source === 'external'
         ? 'Search USDA FoodData Central, Open Food Facts, Health Canada CNF, and UK CoFID together. Results keep their original database source.'
-        : 'Search your private Personal Foods and the shared Community Foods together. Personal Foods are available to every user regardless of plan.';
+        : source === 'personal'
+          ? 'Search only your private Personal Foods. They are available to you regardless of plan.'
+          : 'Search only published Community Foods. Use @displayname to search foods published by a specific author.';
       await runFoodSearch();
     };
     sourceButtons.forEach(b => b.addEventListener('click', () => setFoodSource(b.dataset.foodSource)));
-    const getSearchLabel = source => source === 'external' ? 'all external food databases' : 'MacroSync Foods';
+    const getSearchLabel = source => ({ external: 'all external food databases', personal: 'your Personal Foods', community: 'Community Foods' }[source] || 'foods');
     const searchEndpoint = source => source === 'external' ? '/api/foods/search-all' : null;
 
-    const fetchMacroSyncSearch = async (query, page=1, pageSize=15) => {
+    const fetchMacroSyncSearch = async (source, query, page=1, pageSize=15) => {
       const raw = query.trim();
       const clean = raw.replace(/[%_]/g,'');
       const authorSearch = raw.startsWith('@');
-      let personalReq = supabase.from('user_foods').select('*', { count: 'exact' }).eq('user_id', user.id).order('name').limit(100);
-      let communityReq = supabase.from('community_foods').select('*', { count: 'exact' }).eq('is_public', true).order('name').limit(100);
-      if (authorSearch) {
-        personalReq = null;
-        const ids = await findCommunityAuthorIds(raw);
-        communityReq = ids.length ? communityReq.in('user_id', ids) : null;
-      } else if (clean) {
-        personalReq = personalReq.or(`name.ilike.%${clean}%,brand_name.ilike.%${clean}%,store_name.ilike.%${clean}%`);
-        communityReq = communityReq.or(`name.ilike.%${clean}%,brand_name.ilike.%${clean}%,store_name.ilike.%${clean}%`);
+      if (source === 'personal') {
+        let req = supabase.from('user_foods').select('*', { count: 'exact' }).eq('user_id', user.id).order('name').limit(100);
+        if (clean) req = req.or(`name.ilike.%${clean}%,brand_name.ilike.%${clean}%,store_name.ilike.%${clean}%`);
+        const result = await req;
+        if (result.error) throw result.error;
+        const foods = (result.data || []).map(f => ({ ...f, _source: 'personal' }));
+        const start=(page-1)*pageSize;
+        const sliced=foods.slice(start,start+pageSize);
+        return { foods:sliced, totalHits:foods.length, page, pageSize, totalPages:Math.max(1,Math.ceil(foods.length/pageSize)) };
       }
-      const [personalResult, communityResult] = await Promise.all([
-        personalReq || Promise.resolve({data:[],error:null}),
-        communityReq || Promise.resolve({data:[],error:null})
-      ]);
-      if (personalResult.error) throw personalResult.error;
-      if (communityResult.error) throw communityResult.error;
-      const personal = (personalResult.data || []).map(f => ({ ...f, _source: 'personal' }));
-      const community = (communityResult.data || []).map(f => ({ ...f, _source: 'community' }));
-      const foods = [...personal, ...community].sort((a,b) => String(a.name).localeCompare(String(b.name)));
+      let req = supabase.from('community_foods').select('*', { count: 'exact' }).eq('is_public', true).order('name').limit(100);
+      if (authorSearch) {
+        const ids = await findCommunityAuthorIds(raw);
+        req = ids.length ? req.in('user_id', ids) : null;
+      } else if (clean) {
+        req = req.or(`name.ilike.%${clean}%,brand_name.ilike.%${clean}%,store_name.ilike.%${clean}%`);
+      }
+      const result = req ? await req : {data:[],error:null};
+      if (result.error) throw result.error;
+      const foods = (result.data || []).map(f => ({ ...f, _source: 'community' }));
       const start=(page-1)*pageSize;
       const sliced=foods.slice(start,start+pageSize);
       return { foods:sliced, totalHits:foods.length, page, pageSize, totalPages:Math.max(1,Math.ceil(foods.length/pageSize)) };
@@ -1141,7 +1144,7 @@ const PulsePlateApp = (() => {
       overlay.innerHTML=`<section class="modal-card food-search-modal" role="dialog" aria-modal="true" aria-labelledby="foodSearchModalTitle"><button class="modal-close" data-close-food-search type="button" aria-label="Close">×</button><p class="eyebrow">${escapeHtml(getSearchLabel(source))}</p><h2 id="foodSearchModalTitle">Search results</h2><p class="page-copy">Showing 15 foods per page. Select a food to choose its serving.</p><div data-food-modal-results></div><div class="food-search-pagination" data-food-pagination></div></section>`;
       document.body.appendChild(overlay); overlay.querySelector('[data-close-food-search]').onclick=()=>overlay.remove();
       const results=overlay.querySelector('[data-food-modal-results]'); const pagination=overlay.querySelector('[data-food-pagination]'); let activePage=1;
-      const loadPage=async page=>{results.innerHTML='<p class="page-copy">Loading results…</p>';pagination.innerHTML='';try{let data;if(source==='macrosync')data=page===1&&initialData?initialData:await fetchMacroSyncSearch(query,page,15);else{const response=await fetch(`${searchEndpoint(source)}?q=${encodeURIComponent(query)}&page=${page}&pageSize=15`);data=await response.json();if(!response.ok)throw new Error(data.error||'Food search failed.');}activePage=Number(data.page)||page;const foods=Array.isArray(data.foods)?data.foods:[];if(!foods.length){results.innerHTML='<p class="page-copy">No foods found on this page.</p>';return;}results.innerHTML=foods.map(food=>source==='macrosync'?(food._source==='community'?communityFoodCard(food):personalFoodCard(food)):foodCard(food,food.source||'external')).join('');bindFoodResults(results,foods,source);const totalPages=Math.max(1,Number(data.totalPages)||Math.ceil((Number(data.totalHits)||foods.length)/15));if(totalPages>1){const buttons=[];const first=Math.max(1,activePage-2),last=Math.min(totalPages,first+4);if(activePage>1)buttons.push(`<button type="button" class="ghost-button" data-page="${activePage-1}">Previous</button>`);for(let i=first;i<=last;i++)buttons.push(`<button type="button" class="${i===activePage?'primary-button':'ghost-button'}" data-page="${i}">${i}</button>`);if(activePage<totalPages)buttons.push(`<button type="button" class="ghost-button" data-page="${activePage+1}">Next</button>`);pagination.innerHTML=buttons.join('');pagination.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>loadPage(Number(b.dataset.page)));}}catch(error){results.innerHTML=`<p class="page-copy">${escapeHtml(error.message)}</p>`;}};loadPage(1);
+      const loadPage=async page=>{results.innerHTML='<p class="page-copy">Loading results…</p>';pagination.innerHTML='';try{let data;if(source!=='external')data=page===1&&initialData?initialData:await fetchMacroSyncSearch(source,query,page,15);else{const response=await fetch(`${searchEndpoint(source)}?q=${encodeURIComponent(query)}&page=${page}&pageSize=15`);data=await response.json();if(!response.ok)throw new Error(data.error||'Food search failed.');}activePage=Number(data.page)||page;const foods=Array.isArray(data.foods)?data.foods:[];if(!foods.length){results.innerHTML='<p class="page-copy">No foods found on this page.</p>';return;}results.innerHTML=foods.map(food=>source==='community'?communityFoodCard(food):source==='personal'?personalFoodCard(food):foodCard(food,food.source||'external')).join('');bindFoodResults(results,foods,source);const totalPages=Math.max(1,Number(data.totalPages)||Math.ceil((Number(data.totalHits)||foods.length)/15));if(totalPages>1){const buttons=[];const first=Math.max(1,activePage-2),last=Math.min(totalPages,first+4);if(activePage>1)buttons.push(`<button type="button" class="ghost-button" data-page="${activePage-1}">Previous</button>`);for(let i=first;i<=last;i++)buttons.push(`<button type="button" class="${i===activePage?'primary-button':'ghost-button'}" data-page="${i}">${i}</button>`);if(activePage<totalPages)buttons.push(`<button type="button" class="ghost-button" data-page="${activePage+1}">Next</button>`);pagination.innerHTML=buttons.join('');pagination.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>loadPage(Number(b.dataset.page)));}}catch(error){results.innerHTML=`<p class="page-copy">${escapeHtml(error.message)}</p>`;}};loadPage(1);
     };
 
     const runFoodSearch = async () => {
@@ -1149,11 +1152,11 @@ const PulsePlateApp = (() => {
       if(q.length<2){list.innerHTML=`<p class="page-copy">Type at least two characters to search ${getSearchLabel(foodSource)}.</p>`;return;}
       list.innerHTML=`<p class="page-copy">Searching ${getSearchLabel(foodSource)}…</p>`;
       try{
-        const data=foodSource==='macrosync'?await fetchMacroSyncSearch(q,1,15):await (async()=>{const response=await fetch(`${searchEndpoint('external')}?q=${encodeURIComponent(q)}&page=1&pageSize=15`);const d=await response.json();if(!response.ok)throw new Error(d.error||'Food search failed.');return d;})();
+        const data=foodSource!=='external'?await fetchMacroSyncSearch(foodSource,q,1,15):await (async()=>{const response=await fetch(`${searchEndpoint('external')}?q=${encodeURIComponent(q)}&page=1&pageSize=15`);const d=await response.json();if(!response.ok)throw new Error(d.error||'Food search failed.');return d;})();
         const foods=Array.isArray(data.foods)?data.foods:[];
         const visible=foods.slice(0,10);
         const viewAll=Number(data.totalHits||foods.length)>10?`<div class="food-search-view-all"><button type="button" class="ghost-button" data-view-all-foods>View all results</button></div>`:'';
-        const markup=foodSource==='macrosync'?visible.map(f=>f._source==='community'?communityFoodCard(f):personalFoodCard(f)).join(''):visible.map(f=>foodCard(f,f.source||'external')).join('');
+        const markup=foodSource==='community'?visible.map(f=>communityFoodCard(f)).join(''):foodSource==='personal'?visible.map(f=>personalFoodCard(f)).join(''):visible.map(f=>foodCard(f,f.source||'external')).join('');
         list.innerHTML=visible.length?`<p class="food-search-count">Showing ${visible.length} result${visible.length===1?'':'s'}${data.totalHits?` of ${Number(data.totalHits).toLocaleString()}`:''}.</p>${markup}${viewAll}`:'<p class="page-copy">No matching foods found.</p>';
         bindFoodResults(list,visible,foodSource);list.querySelector('[data-view-all-foods]')?.addEventListener('click',()=>renderPagedSearchModal(q,foodSource,data));
       }catch(error){console.error(error);list.innerHTML=`<p class="page-copy">${escapeHtml(error.message)}</p>`;}
