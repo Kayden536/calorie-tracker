@@ -592,11 +592,11 @@ grant execute on function public.delete_meal(uuid,date) to authenticated;
 
 alter table public.user_foods add column if not exists serving_grams numeric not null default 100 check (serving_grams > 0);
 alter table public.user_foods add column if not exists serving_options jsonb not null default '[]'::jsonb;
-alter table public.user_foods add column if not exists conversion_mode text not null default 'estimate';
+alter table public.user_foods add column if not exists conversion_mode text not null default 'none';
 alter table public.user_foods drop constraint if exists user_foods_conversion_mode_check;
 alter table public.user_foods add constraint user_foods_conversion_mode_check check (conversion_mode in ('none','estimate'));
 
-alter table public.community_foods add column if not exists conversion_mode text not null default 'estimate';
+alter table public.community_foods add column if not exists conversion_mode text not null default 'none';
 alter table public.community_foods drop constraint if exists community_foods_conversion_mode_check;
 alter table public.community_foods add constraint community_foods_conversion_mode_check check (conversion_mode in ('none','estimate'));
 
@@ -606,7 +606,7 @@ create or replace function public.create_food_records(
   p_name text, p_calories_per_100g numeric, p_protein_per_100g numeric, p_carbs_per_100g numeric, p_fat_per_100g numeric,
   p_serving_amount numeric, p_serving_unit text, p_serving_grams numeric, p_save_personal boolean default true, p_publish_community boolean default true,
   p_personal_calories numeric default null, p_personal_protein numeric default null, p_personal_carbs numeric default null, p_personal_fat numeric default null,
-  p_personal_source text default 'manual', p_serving_options jsonb default '[]'::jsonb, p_conversion_mode text default 'estimate'
+  p_personal_source text default 'manual', p_serving_options jsonb default '[]'::jsonb, p_conversion_mode text default 'none'
 )
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare community_id bigint; personal_id bigint; clean_name text := nullif(trim(coalesce(p_name,'')), ''); unit text := nullif(trim(coalesce(p_serving_unit,'')), ''); opts jsonb := coalesce(p_serving_options,'[]'::jsonb);
@@ -2437,7 +2437,7 @@ create or replace function public.create_food_records(
   p_name text, p_calories_per_100g numeric, p_protein_per_100g numeric, p_carbs_per_100g numeric, p_fat_per_100g numeric,
   p_serving_amount numeric, p_serving_unit text, p_serving_grams numeric, p_save_personal boolean default true, p_publish_community boolean default false,
   p_personal_calories numeric default null, p_personal_protein numeric default null, p_personal_carbs numeric default null, p_personal_fat numeric default null,
-  p_personal_source text default 'manual', p_serving_options jsonb default '[]'::jsonb, p_conversion_mode text default 'estimate'
+  p_personal_source text default 'manual', p_serving_options jsonb default '[]'::jsonb, p_conversion_mode text default 'none'
 ) returns jsonb language plpgsql security definer set search_path=public as $$
 declare
   community_id bigint; personal_id bigint; clean_name text := nullif(trim(coalesce(p_name,'')), ''); unit text := nullif(trim(coalesce(p_serving_unit,'')), ''); opts jsonb := coalesce(p_serving_options,'[]'::jsonb);
@@ -2536,3 +2536,204 @@ begin
 end; $$;
 revoke all on function public.cleanup_public_launch_telemetry(integer) from public;
 grant execute on function public.cleanup_public_launch_telemetry(integer) to authenticated;
+
+
+-- ================================================================
+-- MacroSync food logging improvements
+-- Brand/store metadata, recent foods, normalized serving fields,
+-- future planning limits, and single-food copy-to-tomorrow support.
+-- ================================================================
+
+alter table public.user_foods add column if not exists brand_name text;
+alter table public.user_foods add column if not exists store_name text;
+alter table public.community_foods add column if not exists brand_name text;
+alter table public.community_foods add column if not exists store_name text;
+
+alter table public.food_entries add column if not exists source text not null default 'unknown';
+alter table public.food_entries add column if not exists source_id text not null default '';
+alter table public.food_entries add column if not exists serving_amount numeric;
+alter table public.food_entries add column if not exists serving_unit text;
+alter table public.food_entries add column if not exists serving_grams numeric;
+alter table public.food_entries add column if not exists brand_name text;
+alter table public.food_entries add column if not exists store_name text;
+alter table public.food_entries drop constraint if exists food_entries_source_check;
+alter table public.food_entries add constraint food_entries_source_check check (source in ('unknown','usda','openfoodfacts','cnf','cofid','personal','community','recipe','saved_meal'));
+
+create table if not exists public.recent_foods (
+  id bigint generated by default as identity primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  food_name text not null,
+  source text not null default 'unknown',
+  source_id text not null default '',
+  serving text not null default '1 serving',
+  serving_amount numeric,
+  serving_unit text,
+  serving_grams numeric,
+  fdc_id bigint,
+  brand_name text,
+  store_name text,
+  calories numeric not null default 0,
+  protein numeric not null default 0,
+  carbs numeric not null default 0,
+  fat numeric not null default 0,
+  last_used_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists recent_foods_identity_unique
+  on public.recent_foods(user_id, source, source_id, food_name);
+create index if not exists recent_foods_user_recent_idx
+  on public.recent_foods(user_id, last_used_at desc);
+
+alter table public.recent_foods enable row level security;
+drop policy if exists "recent foods own rows" on public.recent_foods;
+drop policy if exists "recent foods insert own rows" on public.recent_foods;
+drop policy if exists "recent foods update own rows" on public.recent_foods;
+drop policy if exists "recent foods delete own rows" on public.recent_foods;
+create policy "recent foods own rows" on public.recent_foods for select to authenticated using (auth.uid() = user_id);
+create policy "recent foods insert own rows" on public.recent_foods for insert to authenticated with check (auth.uid() = user_id);
+create policy "recent foods update own rows" on public.recent_foods for update to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "recent foods delete own rows" on public.recent_foods for delete to authenticated using (auth.uid() = user_id);
+
+create or replace function public.sync_recent_food_from_entry()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare recent_id bigint;
+begin
+  insert into public.recent_foods(
+    user_id, food_name, source, source_id, serving, serving_amount, serving_unit,
+    serving_grams, fdc_id, brand_name, store_name, calories, protein, carbs, fat, last_used_at
+  ) values (
+    new.user_id,
+    new.food_name,
+    coalesce(nullif(new.source,''),'unknown'),
+    coalesce(new.source_id,''),
+    new.serving,
+    new.serving_amount,
+    new.serving_unit,
+    new.serving_grams,
+    new.fdc_id,
+    new.brand_name,
+    new.store_name,
+    coalesce(new.calories,0), coalesce(new.protein,0), coalesce(new.carbs,0), coalesce(new.fat,0), now()
+  )
+  on conflict (user_id, source, source_id, food_name)
+  do update set
+    serving = excluded.serving,
+    serving_amount = excluded.serving_amount,
+    serving_unit = excluded.serving_unit,
+    serving_grams = excluded.serving_grams,
+    fdc_id = excluded.fdc_id,
+    brand_name = excluded.brand_name,
+    store_name = excluded.store_name,
+    calories = excluded.calories,
+    protein = excluded.protein,
+    carbs = excluded.carbs,
+    fat = excluded.fat,
+    last_used_at = now()
+  returning id into recent_id;
+
+  delete from public.recent_foods r
+  where r.user_id = new.user_id
+    and r.id not in (
+      select id from public.recent_foods where user_id = new.user_id order by last_used_at desc limit 20
+    );
+  return new;
+end;
+$$;
+
+drop trigger if exists sync_recent_food_from_entry on public.food_entries;
+create trigger sync_recent_food_from_entry
+after insert on public.food_entries
+for each row execute function public.sync_recent_food_from_entry();
+
+create or replace function public.copy_food_entry_to_date(p_entry_id bigint, p_target_date date)
+returns public.food_entries language plpgsql security definer set search_path = public as $$
+declare src public.food_entries; copied public.food_entries;
+begin
+  if auth.uid() is null then raise exception 'You must be signed in.'; end if;
+  select * into src from public.food_entries where id = p_entry_id and user_id = auth.uid();
+  if not found then raise exception 'Food entry not found.'; end if;
+  if p_target_date > current_date + 2 then raise exception 'Food can only be planned up to 2 days ahead.'; end if;
+  if p_target_date < current_date then raise exception 'Food cannot be copied to a past date.'; end if;
+  insert into public.food_entries(
+    user_id, logged_date, meal, food_name, serving, fdc_id, calories, protein, carbs, fat,
+    source, source_id, serving_amount, serving_unit, serving_grams, brand_name, store_name
+  ) values (
+    auth.uid(), p_target_date, src.meal, src.food_name, src.serving, src.fdc_id, src.calories, src.protein, src.carbs, src.fat,
+    src.source, src.source_id, src.serving_amount, src.serving_unit, src.serving_grams, src.brand_name, src.store_name
+  ) returning * into copied;
+  return copied;
+end;
+$$;
+
+grant execute on function public.copy_food_entry_to_date(bigint,date) to authenticated;
+
+-- Enforce the same two-day planning limit at the database boundary.
+create or replace function public.enforce_food_entry_plan_window()
+returns trigger language plpgsql as $$
+begin
+  if new.logged_date > current_date + 2 then
+    raise exception 'Food can only be logged up to 2 days ahead.';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists enforce_food_entry_plan_window on public.food_entries;
+create trigger enforce_food_entry_plan_window
+before insert or update of logged_date on public.food_entries
+for each row execute function public.enforce_food_entry_plan_window();
+
+-- Final create_food_records signature with optional brand/store metadata.
+drop function if exists public.create_food_records(text,numeric,numeric,numeric,numeric,numeric,text,numeric,boolean,boolean,numeric,numeric,numeric,numeric,text,jsonb,text);
+drop function if exists public.create_food_records(text,numeric,numeric,numeric,numeric,numeric,text,numeric,boolean,boolean,numeric,numeric,numeric,numeric,text,jsonb,text,text,text);
+create or replace function public.create_food_records(
+  p_name text, p_calories_per_100g numeric, p_protein_per_100g numeric, p_carbs_per_100g numeric, p_fat_per_100g numeric,
+  p_serving_amount numeric, p_serving_unit text, p_serving_grams numeric, p_save_personal boolean default true, p_publish_community boolean default false,
+  p_personal_calories numeric default null, p_personal_protein numeric default null, p_personal_carbs numeric default null, p_personal_fat numeric default null,
+  p_personal_source text default 'manual', p_serving_options jsonb default '[]'::jsonb, p_conversion_mode text default 'none',
+  p_brand_name text default null, p_store_name text default null
+)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  community_id bigint; personal_id bigint;
+  clean_name text := nullif(trim(coalesce(p_name,'')), '');
+  clean_brand text := nullif(trim(coalesce(p_brand_name,'')), '');
+  clean_store text := nullif(trim(coalesce(p_store_name,'')), '');
+  unit text := nullif(trim(coalesce(p_serving_unit,'')), '');
+  opts jsonb := coalesce(p_serving_options,'[]'::jsonb);
+begin
+  if auth.uid() is null then raise exception 'You must be signed in.'; end if;
+  if clean_name is null then raise exception 'Food name cannot be empty.'; end if;
+  if char_length(clean_name)>120 then raise exception 'Food names must be 120 characters or fewer.'; end if;
+  if not p_save_personal and not p_publish_community then raise exception 'Choose at least one database.'; end if;
+  if coalesce(p_serving_grams,0)<=0 or coalesce(p_serving_amount,0)<=0 then raise exception 'Default serving weight and amount must be positive.'; end if;
+  if p_conversion_mode not in ('none','estimate') then raise exception 'Invalid conversion mode.'; end if;
+  if jsonb_typeof(opts)<>'array' then raise exception 'Serving options must be an array.'; end if;
+  if p_calories_per_100g<0 or p_protein_per_100g<0 or p_carbs_per_100g<0 or p_fat_per_100g<0 then raise exception 'Nutrition values cannot be negative.'; end if;
+  if p_protein_per_100g+p_carbs_per_100g+p_fat_per_100g>100.5 then raise exception 'The macros exceed 100 g per 100 g and cannot be saved.'; end if;
+  unit:=coalesce(unit,'serving');
+  if p_publish_community then
+    if not public.is_verified_trainer(auth.uid()) then raise exception 'Only verified trainers can publish Community Foods.'; end if;
+    insert into public.community_foods(user_id,name,brand_name,store_name,calories_per_100g,protein_per_100g,carbs_per_100g,fat_per_100g,serving_options,conversion_mode,is_public)
+    values(auth.uid(),clean_name,clean_brand,clean_store,p_calories_per_100g,p_protein_per_100g,p_carbs_per_100g,p_fat_per_100g,
+      jsonb_build_array(jsonb_build_object('amount',p_serving_amount,'unit',unit,'grams',p_serving_grams,'calories',coalesce(p_personal_calories,p_calories_per_100g*p_serving_grams/100),'protein',coalesce(p_personal_protein,p_protein_per_100g*p_serving_grams/100),'carbs',coalesce(p_personal_carbs,p_carbs_per_100g*p_serving_grams/100),'fat',coalesce(p_personal_fat,p_fat_per_100g*p_serving_grams/100))) || opts,p_conversion_mode,true) returning id into community_id;
+  end if;
+  if p_save_personal then
+    insert into public.user_foods(user_id,name,brand_name,store_name,serving_amount,serving_unit,serving_grams,serving_options,conversion_mode,calories,protein,carbs,fat,source,community_food_id)
+    values(auth.uid(),clean_name,clean_brand,clean_store,p_serving_amount,unit,p_serving_grams,opts,p_conversion_mode,
+      coalesce(p_personal_calories,p_calories_per_100g*p_serving_grams/100),coalesce(p_personal_protein,p_protein_per_100g*p_serving_grams/100),coalesce(p_personal_carbs,p_carbs_per_100g*p_serving_grams/100),coalesce(p_personal_fat,p_fat_per_100g*p_serving_grams/100),coalesce(nullif(p_personal_source,''),'manual'),community_id) returning id into personal_id;
+  end if;
+  if community_id is not null and personal_id is not null then update public.community_foods set personal_food_id=personal_id where id=community_id; end if;
+  return jsonb_build_object('community_food_id',community_id,'personal_food_id',personal_id);
+end; $$;
+grant execute on function public.create_food_records(text,numeric,numeric,numeric,numeric,numeric,text,numeric,boolean,boolean,numeric,numeric,numeric,numeric,text,jsonb,text,text,text) to authenticated;
+
+
+alter table public.saved_meal_items add column if not exists source text not null default 'saved_meal';
+alter table public.saved_meal_items add column if not exists source_id text not null default '';
+alter table public.saved_meal_items add column if not exists serving_amount numeric;
+alter table public.saved_meal_items add column if not exists serving_unit text;
+alter table public.saved_meal_items add column if not exists serving_grams numeric;
+alter table public.saved_meal_items add column if not exists brand_name text;
+alter table public.saved_meal_items add column if not exists store_name text;

@@ -31,19 +31,26 @@
 
         <section class="two-column-grid">
           <section class="panel">
-            <div class="panel-header"><div><p class="eyebrow">Existing foods</p><h2>Add food</h2></div></div>
+            <div class="panel-header"><div><p class="eyebrow">Food logging</p><h2>Add food</h2></div></div>
+            <div class="form-grid logging-controls">
+              <div class="field"><label for="loggingMeal">Add foods to</label><select id="loggingMeal" data-logging-meal></select><p class="field-help">Choose the meal once. Every food you add in this session will go to this meal.</p></div>
+              <div class="field"><label>Planning ahead</label><label class="toggle-row compact-toggle"><input type="checkbox" data-plan-ahead><span><strong>Allow future dates</strong><small>When enabled, you can add foods up to 2 days ahead.</small></span></label></div>
+            </div>
+            <div class="food-search-mode" role="tablist" aria-label="Food source"><button class="food-source-tab active" type="button" data-food-source="external">External Foods</button><button class="food-source-tab" type="button" data-food-source="macrosync">MacroSync Foods</button></div>
             <div class="field"><label for="foodSearch">Search foods</label><input id="foodSearch" data-food-search placeholder="Search chicken, oats, yogurt..." autocomplete="off" /></div>
-            <div class="food-source-tabs" role="tablist" aria-label="Food source"><button class="food-source-tab active" type="button" data-food-source="usda">USDA Foods</button><button class="food-source-tab" type="button" data-food-source="cnf">Canada CNF</button><button class="food-source-tab" type="button" data-food-source="cofid">UK CoFID</button><button class="food-source-tab" type="button" data-food-source="openfoodfacts">Open Food Facts</button><button class="food-source-tab" type="button" data-food-source="community">Community Foods</button></div>
-            <p class="page-copy" data-food-source-hint>USDA FoodData Central results with nutrition verification. Use <strong>Cross-reference</strong> on a result to compare it against the other available databases before logging it.</p><p class="manual-note">In Community Foods, search a food by name or type <strong>@displayname</strong> to find foods published by a specific user or personal trainer.</p>
+            <p class="page-copy" data-food-source-hint>Search USDA FoodData Central, Open Food Facts, Health Canada CNF, and UK CoFID together.</p>
             <div class="food-database-list" data-food-database-list><p class="page-copy">Search for a food to get started.</p></div>
             <div class="panel-divider"></div>
-            <div class="panel-header compact"><div><p class="eyebrow">Community database</p><h2>Add a food</h2></div><button class="ghost-button" type="button" data-community-toggle>+ Add Community Food</button></div>
-            <p class="manual-note">Community Foods are published by verified trainers. They can define easy units such as 1 egg, 1 slice, or 1 cup, with the weight of that unit for accurate scaling.</p><p class="manual-note" data-community-publish-note hidden>Only verified trainers can publish Community Foods. You can still search and use foods published by verified trainers.</p>
-            <div class="food-database-list" data-my-community-food-list><p class="page-copy">You have not published any Community Foods yet.</p></div>
+            <div class="panel-header compact"><div><p class="eyebrow">Recent Foods</p><h2>Recently logged</h2></div></div>
+            <div class="food-database-list" data-recent-food-list><p class="page-copy">Foods you log will appear here for quick reuse. Up to 20 recent foods are kept.</p></div>
             <div class="panel-divider"></div>
-            <div class="panel-header compact"><div><p class="eyebrow">Your private database</p><h2>My Foods</h2></div><button class="ghost-button" type="button" data-manual-toggle>+ Create Manual Food</button></div>
+            <div class="panel-header compact"><div><p class="eyebrow">Personal database</p><h2>My Foods</h2></div><button class="ghost-button" type="button" data-manual-toggle>+ Create Personal Food</button></div>
+            <p class="manual-note">Your Personal Foods are private to your account and searchable from MacroSync Foods. Brand and store are optional.</p>
             <div class="food-database-list" data-personal-food-list><p class="page-copy">You have not created any personal foods yet.</p></div>
-            <p class="manual-note">Selecting an existing food opens a serving window. Changing the amount or serving type automatically recalculates its macros.</p>
+            <div class="panel-divider"></div>
+            <div class="panel-header compact"><div><p class="eyebrow">Community database</p><h2>Publish a food</h2></div><button class="ghost-button" type="button" data-community-toggle>+ Add Community Food</button></div>
+            <p class="manual-note">Community Foods are published by verified trainers. They can define exact units such as scoops, cups, slices, eggs, or other food-specific servings.</p><p class="manual-note" data-community-publish-note hidden>Only verified trainers can publish Community Foods. You can still search and use Community Foods.</p>
+            <div class="food-database-list" data-my-community-food-list><p class="page-copy">You have not published any Community Foods yet.</p></div>
           </section>
 
           <section class="panel">

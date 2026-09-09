@@ -393,18 +393,66 @@ app.get("/api/config", (_req, res) => {
   if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
     return res.status(500).json({ error: "Supabase configuration is missing." });
   }
-  res.json({ supabaseUrl: SUPABASE_URL, supabasePublishableKey: SUPABASE_PUBLISHABLE_KEY, appVersion: '0.56.0' });
+  res.json({ supabaseUrl: SUPABASE_URL, supabasePublishableKey: SUPABASE_PUBLISHABLE_KEY, appVersion: '0.59.0' });
 });
 
 app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
-    server: "PulsePlate Alpha",
+    server: "MacroSync Beta",
     usdaApiKeyConfigured: Boolean(USDA_API_KEY),
     canadianNutrientFileConfigured: true,
     cofidConfigured: cofidConfigured(),
     supabaseConfigured: Boolean(SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY)
   });
+});
+
+app.get('/api/foods/search-all', rateLimit(45, 60_000), async (req, res) => {
+  const query = String(req.query.q || '').trim();
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const pageSize = Math.min(20, Math.max(1, Number(req.query.pageSize) || 15));
+  if (query.length < 2) return res.json({ foods: [], totalHits: 0, page, pageSize, totalPages: 0, sources: {} });
+
+  const sourceResults = await Promise.allSettled([
+    (async () => {
+      if (!USDA_API_KEY) return { foods: [], totalHits: 0, available: false, error: 'USDA API key is not configured.' };
+      const url = new URL('https://api.nal.usda.gov/fdc/v1/foods/search');
+      url.searchParams.set('api_key', USDA_API_KEY); url.searchParams.set('query', query); url.searchParams.set('pageSize', '8'); url.searchParams.set('pageNumber', '1');
+      const response = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'MacroSync-Alpha/0.1' } });
+      if (!response.ok) throw new Error(`USDA API returned HTTP ${response.status}.`);
+      const data = JSON.parse(await response.text());
+      const foods = (Array.isArray(data.foods) ? data.foods : []).map(food => { const nutrients=nutrientMap(food); return { id:food.fdcId,name:food.description||'Unknown food',brand:food.brandOwner||food.brandName||'',dataType:food.dataType||'USDA FoodData Central',servingSize:food.servingSize||null,servingUnit:food.servingSizeUnit||'',householdServing:food.householdServingFullText||'',nutrients,nutritionVerification:verifyNutrition(nutrients),source:'usda' }; }).filter(food=>food.nutritionVerification.verified);
+      return { foods, totalHits:Number(data.totalHits)||foods.length, available:true };
+    })(),
+    searchOpenFoodFacts(query,1,8),
+    searchCanadianNutrientFile(query,1,8),
+    searchCofid(query,1,8)
+  ]);
+  const labels=['usda','openfoodfacts','cnf','cofid'];
+  const sources={};
+  labels.forEach((label,i)=>{const r=sourceResults[i];if(r.status==='fulfilled')sources[label]=r.value;else sources[label]={foods:[],totalHits:0,available:false,error:'Source temporarily unavailable.'};});
+  const all=labels.flatMap(label=>(sources[label].foods||[]).map(food=>({...food,source:food.source||label,_sourceLabel:label})));
+  const exactQuery=normalizeFoodName(query);
+  all.sort((a,b)=>{const score=f=>{const name=normalizeFoodName(f.name);return (name===exactQuery?100:0)+(name.startsWith(exactQuery)?30:0)+foodSimilarity(exactQuery,name)*20+(f.brand?2:0);};return score(b)-score(a);});
+  const start=(page-1)*pageSize; const foods=all.slice(start,start+pageSize);
+  res.json({foods,totalHits:all.length,page,pageSize,totalPages:Math.max(1,Math.ceil(all.length/pageSize)),sources:Object.fromEntries(labels.map(l=>[l,{available:sources[l].available!==false,totalHits:Number(sources[l].totalHits||0)}]))});
+});
+
+app.get('/api/foods/details-openfoodfacts/:id', rateLimit(45, 60_000), async (req,res)=>{
+  const id=String(req.params.id||'').trim();
+  if(!id) return res.status(400).json({error:'Invalid Open Food Facts product code.'});
+  try{
+    const url=`${OPEN_FOOD_FACTS_BASE}/api/v2/product/${encodeURIComponent(id)}.json?fields=product_name,serving_size,serving_quantity,nutriments,brands`;
+    const response=await fetchOpenFoodFacts(new URL(url));
+    if(!response.ok) return res.status(502).json({error:'Open Food Facts product lookup failed.'});
+    const data=await response.json(); const product=data.product||{}; const measures=[];
+    const servingQuantity=Number(product.serving_quantity);
+    const text=String(product.serving_size||'');
+    if(Number.isFinite(servingQuantity)&&servingQuantity>0) measures.push({amount:1,unit:text||'serving',grams:servingQuantity});
+    const regex=/([0-9]+(?:\.[0-9]+)?)\s*(scoop|cup|cups|slice|slices|piece|pieces|tbsp|tsp|tablespoon|teaspoon|bar|bars|egg|eggs|tortilla|tortillas|packet|packets|serving|servings)\s*\((?:about\s*)?([0-9]+(?:\.[0-9]+)?)\s*g\)/ig;
+    let match; while((match=regex.exec(text))){measures.push({amount:Number(match[1]),unit:match[2],grams:Number(match[3])});}
+    res.json({measures});
+  }catch(error){console.error('Open Food Facts detail request failed:',error);res.status(502).json({error:'Unable to reach Open Food Facts right now.'});}
 });
 
 app.get("/api/foods/search", rateLimit(60, 60_000), async (req, res) => {
@@ -556,7 +604,7 @@ app.use((_req, res) => {
 
 const server = app.listen(port, () => {
   console.log("========================================");
-  console.log("       PulsePlate Alpha Server");
+  console.log("       MacroSync Beta Server");
   console.log("========================================");
   console.log(`Server: http://localhost:${port}`);
   console.log(`USDA API key: ${USDA_API_KEY ? "CONFIGURED" : "MISSING"}`);

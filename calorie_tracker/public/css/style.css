@@ -2334,3 +2334,12 @@ body.light-theme .cross-source-card,body.light-theme .cross-reference-summary,bo
 .error-stack{white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;margin:8px 0 0;font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted,#9aa0b2);}
 
 .analytics-summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px}.analytics-summary-card{padding:16px;display:grid;gap:6px}.analytics-summary-card span{color:var(--muted,#9aa0b2);font-size:.88rem}
+
+
+/* Food logging update */
+.food-search-mode{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 8px}
+.logging-controls{margin-bottom:8px}
+.compact-toggle{margin:0;min-height:44px}
+.recent-food-card .food-card-actions{align-self:center}
+.calendar-day.disabled{opacity:.45;cursor:not-allowed}
+@media(max-width:700px){.logging-controls{grid-template-columns:1fr}.food-search-mode{display:grid;grid-template-columns:1fr 1fr}.food-search-mode .food-source-tab{width:100%}}
