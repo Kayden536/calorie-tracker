@@ -36,6 +36,11 @@
               <div class="field"><label for="loggingMeal">Add foods to</label><select id="loggingMeal" data-logging-meal></select><p class="field-help">Choose the meal once. Every food you add in this session will go to this meal.</p></div>
               <div class="field"><label>Planning ahead</label><label class="toggle-row compact-toggle"><input type="checkbox" data-plan-ahead><span><strong>Allow future dates</strong><small>When enabled, you can add foods up to 2 days ahead.</small></span></label></div>
             </div>
+                        <div class="panel-divider"></div>
+            <div class="panel-header compact"><div><p class="eyebrow">Quick logging</p><h2>Saved Meals</h2></div><a class="ghost-button" href="recipes.html">Recipes</a></div>
+            <div data-saved-meal-list><p class="page-copy">No saved meals yet.</p></div>
+            <p class="page-copy">Saved meals are private to your account. Choose a saved meal to add all of its foods to the selected meal and date.</p>
+            <div class="panel-divider"></div>
             <div class="food-search-mode" role="tablist" aria-label="Food source"><button class="food-source-tab active" type="button" data-food-source="external">External Foods</button><button class="food-source-tab" type="button" data-food-source="personal">Personal Foods</button><button class="food-source-tab" type="button" data-food-source="community">Community Foods</button></div>
             <div class="field"><label for="foodSearch">Search foods</label><input id="foodSearch" data-food-search placeholder="Search chicken, oats, yogurt..." autocomplete="off" /></div>
             <p class="page-copy" data-food-source-hint>Search USDA FoodData Central, Open Food Facts, Health Canada CNF, and UK CoFID together.</p>
@@ -54,17 +59,14 @@
           </section>
 
           <section class="panel">
-            <div class="panel-header"><div><p class="eyebrow">Quick logging</p><h2>Saved Meals</h2></div><a class="ghost-button" href="recipes.html">Recipes</a></div>
-            <div data-saved-meal-list><p class="page-copy">No saved meals yet.</p></div>
-            <p class="page-copy">Saved meals are private to your account and are designed for foods you log together often.</p>
-            <div class="panel-divider"></div>
-            <div class="panel-header compact"><div><p class="eyebrow">Your meals</p><h2>Meal setup</h2></div></div>
+            <div class="panel-header"><div><p class="eyebrow">Your meals</p><h2>Meal setup</h2></div></div>
             <p class="page-copy">You start with 3 meals. Rename them any time, delete optional meals when they are empty, and add up to 10 meals total.</p>
             <div data-meal-manager></div>
             <div class="panel-divider"></div>
             <div class="panel-header compact"><div><p class="eyebrow">Selected date</p><h2>Meal preview</h2></div></div>
             <div data-meal-list></div>
           </section>
+
         </section>
       </section>
       <nav class="mobile-nav"><a href="index.html"><span>H</span>Home</a><a class="active" href="log_food.html"><span>+</span>Log</a><a href="progress.html"><span>O</span>Stats</a><a href="social.html"><span>@</span>Friends</a><button class="mobile-menu-button" type="button" data-mobile-menu aria-label="Open menu" aria-expanded="false"><span class="mobile-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span>Menu</span></button></nav>

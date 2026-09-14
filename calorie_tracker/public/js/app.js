@@ -1,4 +1,4 @@
-const MACROSYNC_VERSION = '0.60.0';
+const MACROSYNC_VERSION = '0.60.6.1';
 let telemetryDisabled = false;
 let supabaseTelemetryClient = null;
 
@@ -97,6 +97,17 @@ const PulsePlateApp = (() => {
   };
   const addDays = (date, amount) => { const d = new Date(date); d.setDate(d.getDate()+amount); return d; };
   const moneyless = (n) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 1 });
+  function showToast(message, type = 'success') {
+    const existing = document.querySelector('[data-app-toast]');
+    existing?.remove();
+    const toast = document.createElement('div');
+    toast.className = `app-toast ${type === 'error' ? 'error' : 'success'}`;
+    toast.setAttribute('data-app-toast', 'true');
+    toast.setAttribute('role', 'status');
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    window.setTimeout(() => toast.remove(), 3200);
+  }
   const formatDate = (date) => date.toLocaleDateString(undefined, { weekday:'long', month:'long', day:'numeric' });
   // Display names are intentionally stricter than ordinary messages.  Keep this
   // list focused on clearly abusive, sexual, or otherwise inappropriate terms.
@@ -895,12 +906,25 @@ const PulsePlateApp = (() => {
 
   function totalsFor(entries) { return entries.reduce((t,e)=>({calories:t.calories+Number(e.calories||0),protein:t.protein+Number(e.protein||0),carbs:t.carbs+Number(e.carbs||0),fat:t.fat+Number(e.fat||0)}),{calories:0,protein:0,carbs:0,fat:0}); }
 
+  async function deleteSelectedDayFoods(entryIds) {
+    const ids = [...new Set(entryIds.map(Number).filter(Number.isFinite))];
+    if (!ids.length) { showToast('Select at least one food first.', 'error'); return; }
+    if (!window.confirm(`Delete ${ids.length} selected food item${ids.length === 1 ? '' : 's'} from this day? This cannot be undone.`)) return;
+    const { error } = await supabase.from('food_entries').delete().in('id', ids).eq('user_id', user.id).eq('logged_date', dateKey(selectedDate));
+    if (error) { showToast(`Selected foods could not be deleted: ${error.message}`, 'error'); return; }
+    showToast(`${ids.length} food item${ids.length === 1 ? '' : 's'} deleted.`);
+    await renderPage();
+  }
+
   const mealCollapsed = new Set();
 
   async function renderMeals(entries) {
     const list = $('[data-meal-list]'); if (!list) return;
     const grouped = userMeals.map(meal => ({ meal: meal.name, mealId: meal.id, mealNumber: meal.meal_number, items: entries.filter(e => e.meal === meal.name) }));
-    list.innerHTML = grouped.map(group => {
+    list.innerHTML = `${entries.length ? `<div class=\"bulk-food-toolbar\" data-bulk-day-toolbar>
+      <div><strong>Manage foods for ${escapeHtml(formatDate(selectedDate))}</strong><span>Select multiple logged foods to delete them at once.</span></div>
+      <div class=\"bulk-food-actions\"><button class=\"ghost-button\" type=\"button\" data-select-all-day> Select all </button><button class=\"ghost-button\" type=\"button\" data-clear-all-day> Clear </button><button class=\"danger-button\" type=\"button\" data-delete-selected-day> Delete selected <span data-selected-day-count>(0)</span></button></div>
+    </div>` : ''}${grouped.map(group => {
       const calories = group.items.reduce((sum, e) => sum + Number(e.calories || 0), 0);
       const stateKey = `${dateKey(selectedDate)}:${group.mealId}`;
       const isOpen = !mealCollapsed.has(stateKey);
@@ -911,14 +935,26 @@ const PulsePlateApp = (() => {
         </summary>
         <div class="meal-group-body">
           ${group.items.length ? group.items.map(e => `<article class="meal-item">
-            <div class="meal-item-main"><strong>${escapeHtml(e.food_name)}</strong><span>${escapeHtml(e.serving)}</span></div>
+            <div class="meal-item-select"><input type="checkbox" data-day-food-select="${e.id}" aria-label="Select ${escapeHtml(e.food_name)}"></div><div class="meal-item-main"><strong>${escapeHtml(e.food_name)}</strong><span>${escapeHtml(e.serving)}</span></div>
             <div class="meal-item-nutrition"><strong>${moneyless(e.calories)} cal</strong><span>P ${moneyless(e.protein)}g</span><span>C ${moneyless(e.carbs)}g</span><span>F ${moneyless(e.fat)}g</span></div>
             <div class="meal-item-actions"><button class="text-button" type="button" data-edit-entry="${e.id}">Edit</button><button class="text-button danger-button" type="button" data-delete-entry="${e.id}">Delete</button><button class="text-button" type="button" data-move-entry="${e.id}">Move</button>${(() => { const target=addDays(new Date(selectedDate),1); return dateKey(target)>=localTodayKey() && dateKey(target)<=dateKey(maxPlanAheadDate()) ? `<button class="text-button" type="button" data-copy-entry="${e.id}">Copy tomorrow</button>` : ''; })()}</div>
           </article>`).join('') : '<p class="meal-empty-copy">No foods logged yet.</p>'}
           <div class="meal-group-actions"><a class="meal-add-link" href="log_food.html">+ Add to ${group.meal}</a>${group.items.length ? `<button class="text-button" type="button" data-save-current-meal="${group.meal}">Save this meal</button>` : ''}</div>
         </div>
       </details>`;
-    }).join('');
+    }).join('')}`;
+    const updateSelectedDayCount = () => {
+      const count = list.querySelectorAll('[data-day-food-select]:checked').length;
+      const countEl = list.querySelector('[data-selected-day-count]');
+      if (countEl) countEl.textContent = `(${count})`;
+    };
+    list.querySelector('[data-select-all-day]')?.addEventListener('click', () => { list.querySelectorAll('[data-day-food-select]').forEach(input => { input.checked = true; }); updateSelectedDayCount(); });
+    list.querySelector('[data-clear-all-day]')?.addEventListener('click', () => { list.querySelectorAll('[data-day-food-select]').forEach(input => { input.checked = false; }); updateSelectedDayCount(); });
+    list.querySelectorAll('[data-day-food-select]').forEach(input => input.addEventListener('change', updateSelectedDayCount));
+    list.querySelector('[data-delete-selected-day]')?.addEventListener('click', async () => {
+      const ids = [...list.querySelectorAll('[data-day-food-select]:checked')].map(input => input.dataset.dayFoodSelect);
+      await deleteSelectedDayFoods(ids);
+    });
     list.querySelectorAll('[data-meal-state-key]').forEach(details => details.addEventListener('toggle', () => {
       const key = details.dataset.mealStateKey;
       if (details.open) mealCollapsed.delete(key); else mealCollapsed.add(key);
@@ -1046,6 +1082,7 @@ const PulsePlateApp = (() => {
     await renderPersonalFoods();
     await renderMyCommunityFoods();
     await renderRecentFoods();
+    await renderSavedMeals();
     await renderMealManager();
 
     const { data: verificationRow } = await supabase.from('trainer_verifications').select('status').eq('user_id', user.id).maybeSingle();
@@ -1515,19 +1552,99 @@ const PulsePlateApp = (() => {
     const box = $('[data-saved-meal-list]');
     if (!box) return;
     const { data, error } = await supabase.from('saved_meals').select('*, saved_meal_items(*)').eq('user_id', user.id).order('name');
-    if (error) { box.innerHTML = `<p class="page-copy">${escapeHtml(error.message)}</p>`; return; }
+    if (error) { box.innerHTML = `<p class="page-copy">Unable to load saved meals right now.</p>`; return; }
     const meals = data || [];
     box.innerHTML = meals.length ? meals.map(savedMealCard).join('') : '<p class="page-copy">No saved meals yet. Save a meal from your diary to log it faster later.</p>';
     box.querySelectorAll('[data-log-saved-meal]').forEach(button => button.addEventListener('click', async () => {
       const meal = meals.find(m => String(m.id) === button.dataset.logSavedMeal);
       if (meal) await logSavedMeal(meal);
     }));
+    box.querySelectorAll('[data-edit-saved-meal]').forEach(button => button.addEventListener('click', async () => {
+      const meal = meals.find(m => String(m.id) === button.dataset.editSavedMeal);
+      if (meal) await editSavedMeal(meal);
+    }));
+    box.querySelectorAll('[data-delete-saved-meal]').forEach(button => button.addEventListener('click', async () => {
+      const meal = meals.find(m => String(m.id) === button.dataset.deleteSavedMeal);
+      if (meal) await deleteSavedMeal(meal);
+    }));
   }
 
   function savedMealCard(meal) {
     const items = Array.isArray(meal.saved_meal_items) ? meal.saved_meal_items : [];
     const calories = items.reduce((sum, item) => sum + Number(item.calories || 0), 0);
-    return `<article class="saved-meal-card"><div><strong>${escapeHtml(meal.name)}</strong><p>${items.length} item${items.length === 1 ? '' : 's'} · ${moneyless(calories)} cal</p></div><button class="ghost-button" type="button" data-log-saved-meal="${meal.id}">Add</button></article>`;
+    return `<article class="saved-meal-card"><div class="saved-meal-info"><strong>${escapeHtml(meal.name)}</strong><p>${items.length} item${items.length === 1 ? '' : 's'} · ${moneyless(calories)} cal</p></div><div class="saved-meal-actions"><button class="ghost-button" type="button" data-log-saved-meal="${meal.id}">Add</button><button class="ghost-button" type="button" data-edit-saved-meal="${meal.id}">Edit</button><button class="danger-button" type="button" data-delete-saved-meal="${meal.id}">Delete</button></div></article>`;
+  }
+
+  async function deleteSavedMeal(meal) {
+    const confirmed = window.confirm(`Delete saved meal “${meal.name}”? This cannot be undone.`);
+    if (!confirmed) return;
+    const { error } = await supabase.from('saved_meals').delete().eq('id', meal.id).eq('user_id', user.id);
+    if (error) { showToast(`Saved meal could not be deleted: ${error.message}`, 'error'); return; }
+    await renderSavedMeals();
+    showToast(`“${meal.name}” deleted.`);
+  }
+
+  async function editSavedMeal(meal) {
+    const items = Array.isArray(meal.saved_meal_items) ? meal.saved_meal_items : [];
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<section class="modal-card saved-meal-edit-modal" role="dialog" aria-modal="true" aria-labelledby="editSavedMealTitle">
+      <button class="modal-close" type="button" data-close-edit-saved-meal aria-label="Close">×</button>
+      <p class="eyebrow">Edit saved meal</p>
+      <h2 id="editSavedMealTitle">${escapeHtml(meal.name)}</h2>
+      <div class="field"><label for="editSavedMealName">Saved meal name</label><input id="editSavedMealName" maxlength="100" value="${escapeHtml(meal.name)}"></div>
+      <div class="saved-meal-edit-items"><div class="saved-meal-edit-header"><div><h3>Foods in this saved meal</h3><p class="page-copy">Select multiple foods to remove them at once.</p></div>${items.length ? `<div class="bulk-food-actions"><button class="ghost-button" type="button" data-select-all-saved-items>Select all</button><button class="ghost-button" type="button" data-clear-all-saved-items>Clear</button><button class="danger-button" type="button" data-remove-selected-saved-items>Remove selected <span data-selected-saved-count>(0)</span></button></div>` : ''}</div>${items.length ? items.map(item => `<div class="saved-meal-edit-item"><div class="saved-meal-item-select"><input type="checkbox" data-saved-meal-item-select="${item.id}" aria-label="Select ${escapeHtml(item.food_name)}"></div><div class="saved-meal-edit-item-info"><strong>${escapeHtml(item.food_name)}</strong><small>${escapeHtml(item.serving || 'Serving')} · ${moneyless(item.calories)} cal</small></div><button class="danger-button" type="button" data-remove-saved-meal-item="${item.id}">Remove</button></div>`).join('') : '<p class="page-copy">This saved meal has no foods.</p>'}</div>
+      <p class="save-status" data-edit-saved-meal-status role="status"></p>
+      <div class="modal-actions"><button class="ghost-button" type="button" data-close-edit-saved-meal>Cancel</button><button class="primary-button" type="button" data-save-edited-saved-meal>Save changes</button></div>
+    </section>`;
+    document.body.appendChild(overlay);
+    overlay.querySelectorAll('[data-close-edit-saved-meal]').forEach(button => button.onclick = () => overlay.remove());
+
+    const updateSelectedSavedCount = () => {
+      const count = overlay.querySelectorAll('[data-saved-meal-item-select]:checked').length;
+      const countEl = overlay.querySelector('[data-selected-saved-count]');
+      if (countEl) countEl.textContent = `(${count})`;
+    };
+    overlay.querySelector('[data-select-all-saved-items]')?.addEventListener('click', () => { overlay.querySelectorAll('[data-saved-meal-item-select]').forEach(input => { input.checked = true; }); updateSelectedSavedCount(); });
+    overlay.querySelector('[data-clear-all-saved-items]')?.addEventListener('click', () => { overlay.querySelectorAll('[data-saved-meal-item-select]').forEach(input => { input.checked = false; }); updateSelectedSavedCount(); });
+    overlay.querySelectorAll('[data-saved-meal-item-select]').forEach(input => input.addEventListener('change', updateSelectedSavedCount));
+    overlay.querySelector('[data-remove-selected-saved-items]')?.addEventListener('click', async () => {
+      const ids = [...overlay.querySelectorAll('[data-saved-meal-item-select]:checked')].map(input => input.dataset.savedMealItemSelect);
+      if (!ids.length) { showToast('Select at least one food first.', 'error'); return; }
+      if (!window.confirm(`Remove ${ids.length} selected food item${ids.length === 1 ? '' : 's'} from this saved meal?`)) return;
+      const button = overlay.querySelector('[data-remove-selected-saved-items]');
+      button.disabled = true;
+      const { error } = await supabase.from('saved_meal_items').delete().in('id', ids).eq('saved_meal_id', meal.id).eq('user_id', user.id);
+      if (error) { button.disabled = false; showToast(`Foods could not be removed: ${error.message}`, 'error'); return; }
+      ids.forEach(id => overlay.querySelector(`[data-saved-meal-item-select=\"${CSS.escape(String(id))}\"]`)?.closest('.saved-meal-edit-item')?.remove());
+      updateSelectedSavedCount();
+      showToast(`${ids.length} food item${ids.length === 1 ? '' : 's'} removed from saved meal.`);
+      button.disabled = false;
+    });
+    overlay.querySelectorAll('[data-remove-saved-meal-item]').forEach(button => button.onclick = async () => {
+      const itemId = button.dataset.removeSavedMealItem;
+      button.disabled = true;
+      const { error } = await supabase.from('saved_meal_items').delete().eq('id', itemId).eq('saved_meal_id', meal.id).eq('user_id', user.id);
+      if (error) { button.disabled = false; showToast(`Food could not be removed: ${error.message}`, 'error'); return; }
+      const row = button.closest('.saved-meal-edit-item');
+      if (row) row.remove();
+      updateSelectedSavedCount();
+      showToast('Food removed from saved meal.');
+    });
+
+    overlay.querySelector('[data-save-edited-saved-meal]').onclick = async () => {
+      const nameInput = overlay.querySelector('#editSavedMealName');
+      const status = overlay.querySelector('[data-edit-saved-meal-status]');
+      const name = nameInput.value.trim();
+      if (!name) { status.textContent = 'Enter a name for this saved meal.'; nameInput.focus(); return; }
+      const button = overlay.querySelector('[data-save-edited-saved-meal]');
+      button.disabled = true; status.textContent = 'Saving…';
+      const { error } = await supabase.from('saved_meals').update({ name, updated_at: new Date().toISOString() }).eq('id', meal.id).eq('user_id', user.id);
+      if (error) { button.disabled = false; status.textContent = `Save failed: ${error.message}`; showToast(`Saved meal could not be updated: ${error.message}`, 'error'); return; }
+      overlay.remove();
+      await renderSavedMeals();
+      showToast(`“${name}” updated successfully.`);
+    };
   }
 
   function normalizeServingUnit(unit) {
@@ -1721,20 +1838,119 @@ const PulsePlateApp = (() => {
 
   async function logSavedMeal(meal) {
     const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Saved meal</p><h2>${escapeHtml(meal.name)}</h2><div class="field"><label for="savedMealDestination">Add to meal</label><select id="savedMealDestination">${mealOptionsMarkup(userMeals[0]?.name || '')}</select></div><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-confirm-saved-meal type="button">Add to meal</button></div></section>`;
+    overlay.innerHTML = `<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Saved meal</p><h2>${escapeHtml(meal.name)}</h2><div class="field"><label for="savedMealDestination">Add to meal</label><select id="savedMealDestination">${mealOptionsMarkup(selectedLoggingMeal || userMeals[0]?.name || '')}</select></div><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-confirm-saved-meal type="button">Add to meal</button></div></section>`;
     document.body.appendChild(overlay); overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());
-    overlay.querySelector('[data-confirm-saved-meal]').onclick=async()=>{const mealName=overlay.querySelector('#savedMealDestination').value;const items=(meal.saved_meal_items||[]).map(item=>({user_id:user.id,logged_date:dateKey(selectedDate),meal:mealName,food_name:item.food_name,serving:item.serving,fdc_id:item.fdc_id,source:item.source||'saved_meal',source_id:item.source_id||'',serving_amount:item.serving_amount||parseServingAmount(item.serving)||1,serving_unit:item.serving_unit||'serving',serving_grams:item.serving_grams||null,brand_name:item.brand_name||null,store_name:item.store_name||null,calories:item.calories,protein:item.protein,carbs:item.carbs,fat:item.fat}));if(!items.length)return;const {error}=await supabase.from('food_entries').insert(items);if(error){alert(error.message);return;}overlay.remove();await renderSelectedDateEntries();};
+    overlay.querySelector('[data-confirm-saved-meal]').onclick=async()=>{
+      const mealName=overlay.querySelector('#savedMealDestination').value;
+      const items=(meal.saved_meal_items||[]).map(item=>({user_id:user.id,logged_date:dateKey(selectedDate),meal:mealName,food_name:item.food_name,serving:item.serving,fdc_id:item.fdc_id,source:item.source||'saved_meal',source_id:item.source_id||'',serving_amount:item.serving_amount||parseServingAmount(item.serving)||1,serving_unit:item.serving_unit||'serving',serving_grams:item.serving_grams||null,brand_name:item.brand_name||null,store_name:item.store_name||null,calories:item.calories,protein:item.protein,carbs:item.carbs,fat:item.fat}));
+      if(!items.length){ showToast('This saved meal has no foods to add.', 'error'); return; }
+      const button=overlay.querySelector('[data-confirm-saved-meal]'); button.disabled=true;
+      const {error}=await supabase.from('food_entries').insert(items);
+      button.disabled=false;
+      if(error){ showToast(`Saved meal could not be added: ${error.message}`, 'error'); return; }
+      overlay.remove(); await renderSelectedDateEntries(); showToast(`${meal.name} added to ${mealName}.`);
+    };
   }
 
   async function saveCurrentMealAsSaved(mealName) {
-    const entries = (await getEntries()).filter(e => e.meal === mealName);
-    if (!entries.length) { alert(`There are no foods logged under ${mealName}.`); return; }
-    const name = prompt(`Name this saved ${mealName.toLowerCase()} meal:`, `My ${mealName}`); if (!name?.trim()) return;
-    const { data: saved, error } = await supabase.from('saved_meals').insert({user_id:user.id,name:name.trim()}).select('*').single();
-    if(error){alert(error.message);return;}
-    const items = entries.map(e => ({saved_meal_id:saved.id,user_id:user.id,food_name:e.food_name,serving:e.serving,fdc_id:e.fdc_id,source:e.source||'saved_meal',source_id:e.source_id||'',serving_amount:e.serving_amount||parseServingAmount(e.serving)||1,serving_unit:e.serving_unit||'serving',serving_grams:e.serving_grams||null,brand_name:e.brand_name||null,store_name:e.store_name||null,calories:e.calories,protein:e.protein,carbs:e.carbs,fat:e.fat}));
-    const {error:itemError}=await supabase.from('saved_meal_items').insert(items); if(itemError){alert(itemError.message);return;}
-    await renderSavedMeals(); alert(`${name.trim()} was saved.`);
+    let entries;
+    try {
+      entries = (await getEntries(selectedDate)).filter(e => e.meal === mealName);
+    } catch (error) {
+      showToast(`Could not read ${mealName}: ${error?.message || 'Unknown error'}`, 'error');
+      return;
+    }
+    if (!entries.length) {
+      showToast(`There are no foods logged under ${mealName}.`, 'error');
+      return;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<section class="modal-card saved-meal-save-modal" role="dialog" aria-modal="true" aria-labelledby="saveSavedMealTitle">
+      <button class="modal-close" type="button" data-close-save-saved-meal aria-label="Close">×</button>
+      <p class="eyebrow">Save meal</p>
+      <h2 id="saveSavedMealTitle">Save ${escapeHtml(mealName)}</h2>
+      <p class="page-copy">Save all ${entries.length} food item${entries.length === 1 ? '' : 's'} in ${escapeHtml(mealName)} as a reusable saved meal.</p>
+      <div class="field">
+        <label for="savedMealNameInput">Saved meal name</label>
+        <input id="savedMealNameInput" maxlength="100" value="${escapeHtml(`My ${mealName}`)}" autocomplete="off">
+      </div>
+      <p class="save-status" data-save-saved-meal-status role="status"></p>
+      <div class="modal-actions">
+        <button class="ghost-button" type="button" data-close-save-saved-meal>Cancel</button>
+        <button class="primary-button" type="button" data-confirm-save-saved-meal>Save meal</button>
+      </div>
+    </section>`;
+    document.body.appendChild(overlay);
+
+    overlay.querySelectorAll('[data-close-save-saved-meal]').forEach(button => button.onclick = () => overlay.remove());
+    const input = overlay.querySelector('#savedMealNameInput');
+    const status = overlay.querySelector('[data-save-saved-meal-status]');
+    const confirmButton = overlay.querySelector('[data-confirm-save-saved-meal]');
+    input.focus();
+    input.select();
+
+    const saveButton = document.querySelector(`[data-save-current-meal="${CSS.escape(mealName)}"]`);
+    if (saveButton) saveButton.disabled = true;
+
+    confirmButton.onclick = async () => {
+      const trimmedName = input.value.trim();
+      if (!trimmedName) {
+        status.textContent = 'Enter a name for this saved meal.';
+        input.focus();
+        return;
+      }
+
+      confirmButton.disabled = true;
+      status.textContent = 'Saving…';
+
+      try {
+        const { data: saved, error } = await supabase
+          .from('saved_meals')
+          .insert({ user_id: user.id, name: trimmedName })
+          .select('*')
+          .single();
+
+        if (error) throw error;
+        if (!saved?.id) throw new Error('MacroSync did not receive the saved meal ID from Supabase.');
+
+        const items = entries.map(e => ({
+          saved_meal_id: saved.id,
+          user_id: user.id,
+          food_name: e.food_name,
+          serving: e.serving,
+          fdc_id: e.fdc_id,
+          source: e.source || 'saved_meal',
+          source_id: e.source_id || '',
+          serving_amount: e.serving_amount || parseServingAmount(e.serving) || 1,
+          serving_unit: e.serving_unit || 'serving',
+          serving_grams: e.serving_grams || null,
+          brand_name: e.brand_name || null,
+          store_name: e.store_name || null,
+          calories: e.calories,
+          protein: e.protein,
+          carbs: e.carbs,
+          fat: e.fat
+        }));
+
+        const { error: itemError } = await supabase.from('saved_meal_items').insert(items);
+        if (itemError) {
+          await supabase.from('saved_meals').delete().eq('id', saved.id).eq('user_id', user.id);
+          throw itemError;
+        }
+
+        await renderSavedMeals();
+        overlay.remove();
+        showToast(`“${trimmedName}” saved successfully.`);
+      } catch (error) {
+        confirmButton.disabled = false;
+        status.textContent = `Save failed: ${error?.message || 'Unknown error'}`;
+        showToast(`Saved meal failed: ${error?.message || 'Unknown error'}`, 'error');
+      }
+    };
+
+    if (saveButton) saveButton.disabled = false;
   }
 
   async function saveFood() { openManualFoodModal(); }
@@ -3205,9 +3421,31 @@ const PulsePlateApp = (() => {
     }
     const { data: friendMeals, error: friendMealsError } = await supabase.from('meals').select('id,meal_number,name').eq('user_id', friend.id).order('meal_number');
     if (friendMealsError) throw friendMealsError;
-    const mealCategories = (friendMeals || []).length
-      ? friendMeals.map(meal => ({ key: meal.name, label: meal.name, id: meal.id }))
-      : [...new Set(entries.map(entry => String(entry.meal || '').trim()).filter(Boolean))].map((name, index) => ({ key: name, label: name, id: `legacy-${index}` }));
+    // Build categories from meals that actually have logged entries. Older databases can
+    // contain duplicate rows in `meals` (for example, Meal 1 repeated many times), and the
+    // viewer should never render those duplicates or empty meal slots. Prefer the configured
+    // meal order, but keep only unique meal names that are present in this day's food log.
+    const entryMealNames = [...new Set(
+      entries.map(entry => String(entry.meal || '').trim()).filter(Boolean)
+    )];
+    const entryMealKeys = new Set(entryMealNames.map(name => name.toLowerCase()));
+    const seenMealKeys = new Set();
+    const mealCategories = [];
+    for (const meal of friendMeals || []) {
+      const name = String(meal.name || '').trim();
+      const key = name.toLowerCase();
+      if (!name || !entryMealKeys.has(key) || seenMealKeys.has(key)) continue;
+      seenMealKeys.add(key);
+      mealCategories.push({ key: name, label: name, id: meal.id });
+    }
+    // Include any legacy/custom meal names found in the food entries that are not present
+    // in the friend's current meal setup.
+    entryMealNames.forEach((name, index) => {
+      const key = name.toLowerCase();
+      if (seenMealKeys.has(key)) return;
+      seenMealKeys.add(key);
+      mealCategories.push({ key: name, label: name, id: `legacy-${index}` });
+    });
     const categoryMarkup = mealCategories.map(category => {
       const categoryEntries = entries.filter(entry => String(entry.meal || '').trim().toLowerCase() === category.key.toLowerCase());
       const categoryTotals = totalsFor(categoryEntries);
