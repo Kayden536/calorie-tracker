@@ -1601,9 +1601,9 @@ create function public.request_trainer_verification(
   p_experience text,
   p_credentials text,
   p_credential_number text default null,
-  p_proof_url text,
-  p_professional_background text,
-  p_statement text
+  p_proof_url text default null,
+  p_professional_background text default null,
+  p_statement text default null
 ) returns public.trainer_verifications
 language plpgsql security definer set search_path=public as $$
 declare r public.trainer_verifications;
@@ -1637,8 +1637,8 @@ begin
   returning * into r;
   return r;
 end; $$;
-revoke all on function public.request_trainer_verification() from public;
-grant execute on function public.request_trainer_verification() to authenticated;
+revoke all on function public.request_trainer_verification(text,text,text,text,text,text) from public;
+grant execute on function public.request_trainer_verification(text,text,text,text,text,text) to authenticated;
 
 drop function if exists public.admin_list_trainer_verifications();
 create function public.admin_list_trainer_verifications() returns table(
