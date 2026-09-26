@@ -16,7 +16,7 @@ for (const file of pages) {
   for (const match of html.matchAll(/(?:href|src)=["']([^"']+)["']/gi)) {
     const ref = match[1];
     if (!ref || /^(?:https?:|data:|#|mailto:|javascript:)/i.test(ref)) continue;
-    const target = path.resolve(path.dirname(full), ref);
+    const target = path.resolve(path.dirname(full), ref.split('#')[0]);
     if (!fs.existsSync(target)) failures.push(`${file}: missing local reference ${ref}`);
   }
 }
