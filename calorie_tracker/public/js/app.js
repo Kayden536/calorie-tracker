@@ -1,4 +1,4 @@
-const MACROSYNC_VERSION = '0.60.6.1';
+const MACROSYNC_VERSION = '0.60.6.4';
 let telemetryDisabled = false;
 let supabaseTelemetryClient = null;
 
@@ -46,6 +46,7 @@ const PulsePlateApp = (() => {
   let userMeals = [];
   let selectedLoggingMeal = '';
   let planAheadEnabled = false;
+  let quickAddMode = 'selected';
   let messageRealtimeChannel;
   let mealRealtimeChannel;
   let conversationBeforeCursor = null;
@@ -108,6 +109,57 @@ const PulsePlateApp = (() => {
     document.body.appendChild(toast);
     window.setTimeout(() => toast.remove(), 3200);
   }
+  function showConfirmModal({ title = 'Please confirm', message = '', confirmLabel = 'Confirm', cancelLabel = 'Cancel', danger = false } = {}) {
+    return new Promise(resolve => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay confirm-overlay';
+      overlay.innerHTML = `<section class="modal-card confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
+        <button class="modal-close" type="button" data-confirm-cancel aria-label="Close">×</button>
+        <p class="eyebrow">Confirmation</p>
+        <h2 id="confirmModalTitle">${escapeHtml(title)}</h2>
+        <p class="page-copy confirm-message">${escapeHtml(message)}</p>
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" data-confirm-cancel>${escapeHtml(cancelLabel)}</button>
+          <button class="${danger ? 'danger-button' : 'primary-button'}" type="button" data-confirm-ok>${escapeHtml(confirmLabel)}</button>
+        </div>
+      </section>`;
+      document.body.appendChild(overlay);
+      let settled = false;
+      const onKey = event => { if (event.key === 'Escape') finish(false); };
+      const finish = value => {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener('keydown', onKey);
+        overlay.remove();
+        resolve(value);
+      };
+      overlay.querySelectorAll('[data-confirm-cancel]').forEach(button => button.addEventListener('click', () => finish(false)));
+      overlay.querySelector('[data-confirm-ok]')?.addEventListener('click', () => finish(true));
+      overlay.addEventListener('click', event => { if (event.target === overlay) finish(false); });
+      document.addEventListener('keydown', onKey);
+      requestAnimationFrame(() => overlay.querySelector('[data-confirm-cancel]')?.focus());
+    });
+  }
+  function showNoticeModal(message, type = 'info') {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay notice-overlay';
+    const title = type === 'error' ? 'Something went wrong' : type === 'success' ? 'Done' : 'MacroSync notice';
+    overlay.innerHTML = `<section class="modal-card notice-modal" role="dialog" aria-modal="true" aria-labelledby="noticeModalTitle">
+      <button class="modal-close" type="button" data-notice-close aria-label="Close">×</button>
+      <p class="eyebrow">${escapeHtml(title)}</p>
+      <h2 id="noticeModalTitle">${escapeHtml(type === 'error' ? 'Please check this' : 'Message')}</h2>
+      <p class="page-copy notice-message">${escapeHtml(String(message ?? ''))}</p>
+      <div class="modal-actions"><button class="primary-button" type="button" data-notice-close>OK</button></div>
+    </section>`;
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    overlay.querySelectorAll('[data-notice-close]').forEach(button => button.addEventListener('click', close));
+    overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
+    const onKey = event => { if (event.key === 'Escape') { document.removeEventListener('keydown', onKey); close(); } };
+    document.addEventListener('keydown', onKey);
+    requestAnimationFrame(() => overlay.querySelector('[data-notice-close]')?.focus());
+  }
+
   const formatDate = (date) => date.toLocaleDateString(undefined, { weekday:'long', month:'long', day:'numeric' });
   // Display names are intentionally stricter than ordinary messages.  Keep this
   // list focused on clearly abusive, sexual, or otherwise inappropriate terms.
@@ -274,7 +326,7 @@ const PulsePlateApp = (() => {
     const { data: existing, error } = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle();
     if (error) throw error;
     if (!existing) {
-      const { data: created, error: insertError } = await supabase.from('profiles').insert({ id: user.id, display_name: displayName, email: user.email || null, role: 'user', onboarding_complete: false, date_of_birth: user.user_metadata?.date_of_birth || null, terms_version: user.user_metadata?.terms_version || null, privacy_version: user.user_metadata?.privacy_version || null, terms_accepted_at: user.user_metadata?.terms_accepted_at || null, privacy_accepted_at: user.user_metadata?.privacy_accepted_at || null, parental_consent_required: user.user_metadata?.parental_consent_required || false, parental_consent_status: user.user_metadata?.parental_consent_status || 'not_required', parent_guardian_email: user.user_metadata?.parent_guardian_email || null }).select('*').single();
+      const { data: created, error: insertError } = await supabase.from('profiles').insert({ id: user.id, display_name: displayName, email: user.email || null, role: 'user', primary_goal: 'maintain', onboarding_complete: false, date_of_birth: user.user_metadata?.date_of_birth || null, terms_version: user.user_metadata?.terms_version || null, privacy_version: user.user_metadata?.privacy_version || null, terms_accepted_at: user.user_metadata?.terms_accepted_at || null, parental_consent_required: user.user_metadata?.parental_consent_required || false, parental_consent_status: user.user_metadata?.parental_consent_status || 'not_required', parent_guardian_email: user.user_metadata?.parent_guardian_email || null }).select('*').single();
       if (insertError) throw insertError;
       return created;
     }
@@ -346,7 +398,7 @@ const PulsePlateApp = (() => {
       event.preventDefault();
       const status = overlay.querySelector('#onboardingStatus');
       status.textContent = 'Saving your setup…';
-      const primaryGoal = overlay.querySelector('input[name="primaryGoal"]:checked')?.value || 'health';
+      const primaryGoal = overlay.querySelector('input[name="primaryGoal"]:checked')?.value || 'maintain';
       const role = overlay.querySelector('input[name="role"]:checked')?.value || 'user';
       const profilePayload = { id:user.id, display_name:profile?.display_name || user.user_metadata?.display_name || user.email?.split('@')[0] || 'MacroSync User', role, business_name:role==='trainer' ? overlay.querySelector('#onboardBusiness').value.trim() || null : null, primary_goal:primaryGoal, onboarding_complete:true };
       const goalsPayload = { user_id:user.id, calorie_goal:Number(overlay.querySelector('#onboardCalories').value), protein_goal:Number(overlay.querySelector('#onboardProtein').value), carbs_goal:Number(overlay.querySelector('#onboardCarbs').value), fat_goal:Number(overlay.querySelector('#onboardFat').value), current_weight:Number(overlay.querySelector('#onboardCurrentWeight').value)||null, goal_weight:Number(overlay.querySelector('#onboardGoalWeight').value)||null, low_carb:Boolean(overlay.querySelector('[data-onboard-low-carb]')?.checked) };
@@ -496,6 +548,22 @@ const PulsePlateApp = (() => {
       menuCurrentY = event.touches[0].clientY;
     }, { passive: true });
 
+    $('[data-logout]')?.addEventListener('click', async () => {
+      const button = $('[data-logout]');
+      if (button?.disabled) return;
+      if (button) { button.disabled = true; button.textContent = 'Logging out…'; }
+      try {
+        closeMenu();
+        const { error } = await supabase.auth.signOut();
+        if (error) throw error;
+        user = null;
+        window.location.replace('auth.html');
+      } catch (error) {
+        console.error('MacroSync logout failed:', error);
+        if (button) { button.disabled = false; button.textContent = 'Log out'; }
+        showToast(`Log out failed: ${error.message || 'Please try again.'}`, 'error');
+      }
+    });
     $('[data-theme-toggle]')?.addEventListener('click', () => {
       const next = document.body.classList.contains('light-theme') ? 'dark' : 'light';
       localStorage.setItem('macrosync-theme', next);
@@ -507,8 +575,8 @@ const PulsePlateApp = (() => {
     $('[data-enable-browser-notifications]')?.addEventListener('click', async () => {
       closeMenu();
       const messageNotificationsEnabled = await getMessageNotificationSetting().catch(() => true);
-      if (!messageNotificationsEnabled) { alert('Message notifications are turned off in MacroSync settings. Turn them on first to enable browser notifications.'); return; }
-      if (!('Notification' in window)) { alert('This browser does not support browser notifications.'); return; }
+      if (!messageNotificationsEnabled) { showNoticeModal('Message notifications are turned off in MacroSync settings. Turn them on first to enable browser notifications.'); return; }
+      if (!('Notification' in window)) { showNoticeModal('This browser does not support browser notifications.'); return; }
       const permission = await Notification.requestPermission();
       if (permission === 'granted') new Notification('MacroSync notifications enabled', { body: 'You will be notified when new messages arrive while MacroSync is open.' });
     });
@@ -615,7 +683,7 @@ const PulsePlateApp = (() => {
   }
 
   async function showNotificationsModal() {
-    const notifications = await getUnreadNotifications().catch(error => { alert(error.message); return []; });
+    const notifications = await getUnreadNotifications().catch(error => { showNoticeModal(error.message); return []; });
     const overlay = document.createElement('div');
     overlay.className = 'settings-overlay';
     overlay.innerHTML = `
@@ -628,7 +696,7 @@ const PulsePlateApp = (() => {
     overlay.querySelectorAll('[data-close-settings]').forEach(b => b.onclick = () => overlay.remove());
     overlay.querySelector('[data-mark-notifications-read')?.addEventListener('click', async () => {
       const { error } = await supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('recipient_id', user.id).is('read_at', null);
-      if (error) { alert(error.message); return; }
+      if (error) { showNoticeModal(error.message); return; }
       overlay.remove();
       await refreshNotifications();
     });
@@ -702,11 +770,11 @@ const PulsePlateApp = (() => {
     document.body.appendChild(overlay);
     overlay.querySelector('[data-close-moderation]')?.addEventListener('click', () => overlay.remove());
     overlay.querySelectorAll('[data-delete-flagged-message]').forEach(btn => btn.addEventListener('click', async () => {
-      if (!confirm('Delete this message permanently?')) return;
+      if (!await showConfirmModal({ title: 'Delete message?', message: 'This message will be permanently deleted. This cannot be undone.', confirmLabel: 'Delete message', danger: true })) return;
       const flag = btn.closest('[data-moderation-flag]');
       const { data: deleted, error: delError } = await supabase.rpc('delete_message', { p_message_id: Number(btn.dataset.deleteFlaggedMessage) });
-      if (delError) { alert(delError.message); return; }
-      if (!deleted) { alert('The message could not be deleted.'); return; }
+      if (delError) { showNoticeModal(delError.message); return; }
+      if (!deleted) { showNoticeModal('The message could not be deleted.'); return; }
       await supabase.from('moderation_flags').update({ status:'resolved', resolved_at:new Date().toISOString() }).eq('id', flag.dataset.moderationFlag).eq('user_id', user.id);
       flag.remove();
       if (!overlay.querySelector('[data-moderation-flag]')) overlay.remove();
@@ -820,7 +888,7 @@ const PulsePlateApp = (() => {
   }
 
   async function openAddMealModal() {
-    if (userMeals.length >= 10) { alert('You can have up to 10 meals.'); return; }
+    if (userMeals.length >= 10) { showNoticeModal('You can have up to 10 meals.'); return; }
     const nextNumber = Math.max(0, ...userMeals.map(m => Number(m.meal_number))) + 1;
     const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
     overlay.innerHTML = `<section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="addMealTitle">
@@ -847,16 +915,16 @@ const PulsePlateApp = (() => {
   }
 
   async function deleteMeal(meal) {
-    if (userMeals.length <= 3) { alert('MacroSync requires at least 3 meals.'); return; }
+    if (userMeals.length <= 3) { showNoticeModal('MacroSync requires at least 3 meals.'); return; }
     const entries = await getEntries(selectedDate);
     const hasEntries = entries.some(e => e.meal === meal.name);
     if (hasEntries) {
-      alert(`${meal.name} still has foods logged today. Move or delete those foods before deleting the meal.`);
+      showNoticeModal(`${meal.name} still has foods logged today. Move or delete those foods before deleting the meal.`);
       return;
     }
-    if (!confirm(`Delete ${meal.name}? This cannot be undone.`)) return;
+    if (!await showConfirmModal({ title: 'Delete meal?', message: `${meal.name} will be permanently deleted. This cannot be undone.`, confirmLabel: 'Delete meal', danger: true })) return;
     const { error } = await supabase.rpc('delete_meal', { p_meal_id: meal.id, p_meal_date: dateKey(selectedDate) });
-    if (error) { alert(error.message); return; }
+    if (error) { showNoticeModal(error.message); return; }
     await refreshMealUI();
   }
 
@@ -909,7 +977,7 @@ const PulsePlateApp = (() => {
   async function deleteSelectedDayFoods(entryIds) {
     const ids = [...new Set(entryIds.map(Number).filter(Number.isFinite))];
     if (!ids.length) { showToast('Select at least one food first.', 'error'); return; }
-    if (!window.confirm(`Delete ${ids.length} selected food item${ids.length === 1 ? '' : 's'} from this day? This cannot be undone.`)) return;
+    if (!await showConfirmModal({ title: 'Delete selected foods?', message: `This will permanently delete ${ids.length} selected food item${ids.length === 1 ? '' : 's'} from ${formatDate(selectedDate)}. This cannot be undone.`, confirmLabel: `Delete ${ids.length} item${ids.length === 1 ? '' : 's'}`, danger: true })) return;
     const { error } = await supabase.from('food_entries').delete().in('id', ids).eq('user_id', user.id).eq('logged_date', dateKey(selectedDate));
     if (error) { showToast(`Selected foods could not be deleted: ${error.message}`, 'error'); return; }
     showToast(`${ids.length} food item${ids.length === 1 ? '' : 's'} deleted.`);
@@ -962,9 +1030,9 @@ const PulsePlateApp = (() => {
     list.querySelectorAll('[data-save-current-meal]').forEach(button => button.addEventListener('click', () => saveCurrentMealAsSaved(button.dataset.saveCurrentMeal)));
     list.querySelectorAll('[data-edit-entry]').forEach(button => button.addEventListener('click', () => { const entry = entries.find(e => String(e.id) === button.dataset.editEntry); if (entry) openEditEntryModal(entry); }));
     list.querySelectorAll('[data-delete-entry]').forEach(button => button.addEventListener('click', async () => {
-      if (!confirm('Delete this food entry permanently?')) return;
+      if (!await showConfirmModal({ title: 'Delete food entry?', message: 'This will permanently remove this logged food from your diary. This cannot be undone.', confirmLabel: 'Delete food', danger: true })) return;
       const { error } = await supabase.from('food_entries').delete().eq('id', button.dataset.deleteEntry).eq('user_id', user.id);
-      if (error) return alert(error.message);
+      if (error) return showNoticeModal(error.message);
       await renderPage();
     }));
     list.querySelectorAll('[data-move-entry]').forEach(button => button.addEventListener('click', () => { const entry = entries.find(e => String(e.id) === button.dataset.moveEntry); if (entry) openMoveEntryModal(entry); }));
@@ -973,9 +1041,9 @@ const PulsePlateApp = (() => {
 
   async function copyEntryToTomorrow(entry) {
     const targetDate=addDays(new Date(entry.logged_date+'T00:00:00'),1);
-    if(!canSelectLogDate(targetDate)){alert('This food cannot be copied farther than 2 days ahead. Turn on Planning ahead when needed.');return;}
+    if(!canSelectLogDate(targetDate)){showToast('This food cannot be copied farther than 2 days ahead. Turn on Planning ahead when needed.','error');return;}
     const {data,error}=await supabase.rpc('copy_food_entry_to_date',{p_entry_id:Number(entry.id),p_target_date:dateKey(targetDate)});
-    if(error){alert(error.message);return;}
+    if(error){showToast(error.message,'error');return;}
     await renderPage();
   }
 
@@ -993,10 +1061,10 @@ const PulsePlateApp = (() => {
     document.body.appendChild(overlay); overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());
     overlay.querySelector('[data-save-edit]').onclick=async()=>{
       const amount=Number(overlay.querySelector('#editEntryAmount').value); const newUnit=overlay.querySelector('#editEntryUnit').value.trim() || 'serving';
-      if(!Number.isFinite(amount)||amount<=0)return alert('Enter a valid amount.');
+      if(!Number.isFinite(amount)||amount<=0)return showNoticeModal('Enter a valid amount.');
       const factor=oldAmount>0?amount/oldAmount:1;
       const payload={serving:`${moneyless(amount)} ${newUnit}`,calories:Number(entry.calories||0)*factor,protein:Number(entry.protein||0)*factor,carbs:Number(entry.carbs||0)*factor,fat:Number(entry.fat||0)*factor};
-      const {error}=await supabase.from('food_entries').update(payload).eq('id',entry.id).eq('user_id',user.id); if(error)return alert(error.message);
+      const {error}=await supabase.from('food_entries').update(payload).eq('id',entry.id).eq('user_id',user.id); if(error)return showNoticeModal(error.message);
       overlay.remove(); await renderPage();
     };
   }
@@ -1005,7 +1073,7 @@ const PulsePlateApp = (() => {
     const overlay=document.createElement('div'); overlay.className='modal-overlay';
     overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Move food</p><h2>${escapeHtml(entry.food_name)}</h2><div class="field"><label for="moveEntryMeal">Move to meal</label><select id="moveEntryMeal">${mealOptionsMarkup(entry.meal)}</select></div><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-save-move type="button">Move food</button></div></section>`;
     document.body.appendChild(overlay); overlay.querySelector('#moveEntryMeal').value=entry.meal; overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());
-    overlay.querySelector('[data-save-move]').onclick=async()=>{const meal=overlay.querySelector('#moveEntryMeal').value;if(meal===entry.meal){overlay.remove();return;}const {error}=await supabase.from('food_entries').update({meal}).eq('id',entry.id).eq('user_id',user.id);if(error)return alert(error.message);overlay.remove();await renderPage();};
+    overlay.querySelector('[data-save-move]').onclick=async()=>{const meal=overlay.querySelector('#moveEntryMeal').value;if(meal===entry.meal){overlay.remove();return;}const {error}=await supabase.from('food_entries').update({meal}).eq('id',entry.id).eq('user_id',user.id);if(error)return showNoticeModal(error.message);overlay.remove();await renderPage();};
   }
 
   async function renderPreviousDay() {
@@ -1068,7 +1136,7 @@ const PulsePlateApp = (() => {
   }
   function wireDateControls(){
     $$('[data-prev-day]').forEach(b=>b.onclick=async()=>{const next=addDays(selectedDate,-1);if(!canSelectLogDate(next))return;selectedDate=next;weekStart=startOfWeek(selectedDate);await renderPage();});
-    $$('[data-next-day]').forEach(b=>b.onclick=async()=>{const next=addDays(selectedDate,1);if(!canSelectLogDate(next)){if(!planAheadEnabled) alert('Turn on Planning ahead to add foods to future dates. You can plan up to 2 days ahead.');return;}selectedDate=next;weekStart=startOfWeek(selectedDate);await renderPage();});
+    $$('[data-next-day]').forEach(b=>b.onclick=async()=>{const next=addDays(selectedDate,1);if(!canSelectLogDate(next)){if(!planAheadEnabled) showNoticeModal('Turn on Planning ahead to add foods to future dates. You can plan up to 2 days ahead.');return;}selectedDate=next;weekStart=startOfWeek(selectedDate);await renderPage();});
     $$('[data-prev-week]').forEach(b=>b.onclick=async()=>{const next=addDays(weekStart,-7);weekStart=next;selectedDate=next;await renderPage();});
     $$('[data-next-week]').forEach(b=>b.onclick=async()=>{const next=addDays(weekStart,7);if(!canSelectLogDate(next)){weekStart=next;selectedDate=next;await renderPage();return;}weekStart=next;selectedDate=next;await renderPage();});
     $$('[data-today-button]').forEach(b=>b.onclick=async()=>{selectedDate=new Date();weekStart=startOfWeek(selectedDate);await renderPage();});
@@ -1103,14 +1171,21 @@ const PulsePlateApp = (() => {
       mealSelect.onchange = () => { selectedLoggingMeal = mealSelect.value; };
     }
     const planToggle = $('[data-plan-ahead]');
+    const quickAddSelect = $('[data-quick-add-mode]');
     if (planToggle) {
       planToggle.checked = planAheadEnabled;
       planToggle.onchange = async () => {
         planAheadEnabled = planToggle.checked;
+        if (!planAheadEnabled) quickAddMode = 'selected';
         const today = new Date(); today.setHours(0,0,0,0);
         if (!planAheadEnabled && selectedDate > today) { selectedDate = new Date(); weekStart = startOfWeek(selectedDate); }
         await renderPage();
       };
+    }
+    if (quickAddSelect) {
+      quickAddSelect.value = planAheadEnabled ? quickAddMode : 'selected';
+      quickAddSelect.disabled = !planAheadEnabled;
+      quickAddSelect.onchange = () => { quickAddMode = quickAddSelect.value || 'selected'; };
     }
 
     let foodSource = 'external';
@@ -1160,6 +1235,11 @@ const PulsePlateApp = (() => {
     };
 
     const bindFoodResults = (container, foods, source) => {
+      container.querySelectorAll('[data-quick-add-search-food]').forEach(button => button.addEventListener('click', async event => {
+        event.stopPropagation();
+        const food = foods.find(f => String(f.id) === button.dataset.quickAddSearchFood);
+        if (food) await quickAddSearchedFood(food, source);
+      }));
       container.querySelectorAll('[data-community-food-id]').forEach(card => card.addEventListener('click', event => {
         if(event.target.closest('[data-edit-community-food],[data-delete-community-food]')) return;
         const food=foods.find(f=>String(f.id)===card.dataset.communityFoodId); if(food) openServingModal(food,'community');
@@ -1220,7 +1300,7 @@ const PulsePlateApp = (() => {
       <p>${brand ? `${brand} · ` : ''}${escapeHtml(sourceLabel)} · ${serving}</p>
       <div class="macro-row"><span>${moneyless(n.calories)} cal</span><span>${moneyless(n.protein)}g protein</span><span>${moneyless(n.carbs)}g carbs</span><span>${moneyless(n.fat)}g fat</span></div>
       ${warning}</div>
-      <div class="food-card-actions"><button type="button" class="ghost-button food-compare-button" data-compare-food data-compare-food-name="${escapeHtml(food.name)}">Compare sources</button><button type="button" class="primary-button food-select-button">Add</button></div>
+      <div class="food-card-actions"><button type="button" class="ghost-button food-compare-button" data-compare-food data-compare-food-name="${escapeHtml(food.name)}">Compare sources</button><button type="button" class="ghost-button" data-quick-add-search-food="${escapeHtml(String(food.id))}">Quick add</button><button type="button" class="primary-button food-select-button">Choose amount</button></div>
     </article>`;
   }
 
@@ -1259,7 +1339,7 @@ const PulsePlateApp = (() => {
       <div class="food-card-main"><strong>${escapeHtml(food.name)}</strong>
       <p>My Food · ${moneyless(food.serving_amount)} ${escapeHtml(food.serving_unit)}${food.brand_name ? ` · ${escapeHtml(food.brand_name)}` : ''}${food.store_name ? ` · ${escapeHtml(food.store_name)}` : ''}</p>
       <div class="macro-row"><span>${moneyless(food.calories)} cal</span><span>${moneyless(food.protein)}g protein</span><span>${moneyless(food.carbs)}g carbs</span><span>${moneyless(food.fat)}g fat</span></div></div>
-      <div class="food-card-actions"><button type="button" class="ghost-button" data-edit-personal-food="${food.id}">Edit</button><button type="button" class="food-delete-button" data-delete-personal-food="${food.id}" aria-label="Delete ${escapeHtml(food.name)}">Delete</button></div>
+      <div class="food-card-actions"><button type="button" class="ghost-button" data-quick-add-search-food="${escapeHtml(String(food.id))}">Quick add</button><button type="button" class="ghost-button" data-edit-personal-food="${food.id}">Edit</button><button type="button" class="food-delete-button" data-delete-personal-food="${food.id}" aria-label="Delete ${escapeHtml(food.name)}">Delete</button></div>
     </div>`;
   }
 
@@ -1272,7 +1352,7 @@ const PulsePlateApp = (() => {
       <p>Community Food · ${escapeHtml(food.serving_options?.[0]?.amount || 1)} ${escapeHtml(food.serving_options?.[0]?.unit || 'serving')}${food.brand_name ? ` · ${escapeHtml(food.brand_name)}` : ''}${food.store_name ? ` · ${escapeHtml(food.store_name)}` : ''}</p>
       <p class="food-author">@${escapeHtml(author)} · ${escapeHtml(role)}</p>
       <div class="macro-row"><span>${moneyless(food.calories_per_100g)} cal</span><span>${moneyless(food.protein_per_100g)}g protein</span><span>${moneyless(food.carbs_per_100g)}g carbs</span><span>${moneyless(food.fat_per_100g)}g fat</span></div></div>
-      ${mine ? `<div class="food-card-actions"><button type="button" class="ghost-button" data-edit-community-food="${food.id}">Edit</button><button type="button" class="food-delete-button" data-delete-community-food="${food.id}" aria-label="Delete ${escapeHtml(food.name)}">Delete</button></div>` : ''}
+      <div class="food-card-actions"><button type="button" class="ghost-button" data-quick-add-search-food="${escapeHtml(String(food.id))}">Quick add</button>${mine ? `<button type="button" class="ghost-button" data-edit-community-food="${food.id}">Edit</button><button type="button" class="food-delete-button" data-delete-community-food="${food.id}" aria-label="Delete ${escapeHtml(food.name)}">Delete</button>` : ''}</div>
     </div>`;
   }
 
@@ -1343,7 +1423,7 @@ const PulsePlateApp = (() => {
   async function deletePersonalFood(id) {
     const foodName = document.querySelector(`[data-personal-food-id="${CSS.escape(String(id))}"] strong`)?.textContent || 'this food';
     const {data:food,error:lookupError}=await supabase.from('user_foods').select('id,name,community_food_id').eq('id',id).eq('user_id',user.id).maybeSingle();
-    if(lookupError){alert(lookupError.message);return;}
+    if(lookupError){showNoticeModal(lookupError.message);return;}
     if(!food)return;
 
     const communityId=food.community_food_id;
@@ -1352,17 +1432,17 @@ const PulsePlateApp = (() => {
       const choice=await choosePersonalFoodDelete(foodName);
       if(choice==='cancel')return;
       deleteCommunity=choice==='both';
-    } else if(!confirm(`Delete ${foodName} from My Foods?`)) {
+    } else if(!await showConfirmModal({ title: 'Delete personal food?', message: `${foodName} will be removed from My Foods.`, confirmLabel: 'Delete food', danger: true })) {
       return;
     }
 
     if(deleteCommunity){
       const {error}=await supabase.from('community_foods').delete().eq('id',communityId).eq('user_id',user.id);
-      if(error){alert(error.message);return;}
+      if(error){showNoticeModal(error.message);return;}
     }
 
     const {error}=await supabase.from('user_foods').delete().eq('id',id).eq('user_id',user.id);
-    if(error){alert(error.message);return;}
+    if(error){showNoticeModal(error.message);return;}
     await renderPersonalFoods();
     await renderMyCommunityFoods();
     if(deleteCommunity && $('[data-food-source].active')?.dataset.foodSource==='community') {
@@ -1383,9 +1463,9 @@ const PulsePlateApp = (() => {
 
   async function deleteCommunityFood(id) {
     const foodName = document.querySelector(`[data-community-food-id="${CSS.escape(String(id))}"] strong`)?.textContent || 'this food';
-    if(!confirm(`Delete ${foodName} from Community Foods? A linked copy in My Foods will remain private.`)) return;
+    if(!await showConfirmModal({ title: 'Delete community food?', message: `${foodName} will be removed from Community Foods. A linked copy in My Foods will remain private.`, confirmLabel: 'Delete food', danger: true })) return;
     const {error}=await supabase.from('community_foods').delete().eq('id',id).eq('user_id',user.id);
-    if(error){alert(error.message);return;}
+    if(error){showNoticeModal(error.message);return;}
     await renderCommunityFoods($('[data-food-search]')?.value || '');
     await renderMyCommunityFoods();
   }
@@ -1486,7 +1566,7 @@ const PulsePlateApp = (() => {
   }
 
   function openCommunityFoodModal(){
-    if (document.body.dataset.canPublishCommunity !== 'true') { alert('Only verified trainers can publish Community Foods.'); return; }
+    if (document.body.dataset.canPublishCommunity !== 'true') { showNoticeModal('Only verified trainers can publish Community Foods.'); return; }
     const overlay=document.createElement('div');overlay.className='modal-overlay';
     overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Food databases</p><h2>Add a food</h2><p class="page-copy">Set one default serving and its nutrition. Then add optional exact serving choices for people who prefer grams, ounces, cups, or individual units.</p><div class="form-grid"><div class="field"><label>Name</label><input data-c-name maxlength="120" placeholder="Egg"></div><div class="field"><label>Brand <span class="field-hint">(optional)</span></label><input data-c-brand maxlength="120" placeholder="Mission"></div><div class="field"><label>Store <span class="field-hint">(optional)</span></label><input data-c-store maxlength="120" placeholder="Walmart"></div><div class="field"><label>Default serving amount</label><input data-c-amount type="number" min="0.01" step="0.01" value="1"></div><div class="field"><label>Default serving unit</label><input data-c-unit maxlength="40" value="serving" placeholder="egg, slice, cup"></div><div class="field"><label>Default serving weight (g)</label><input data-c-grams type="number" min="0.01" step="0.01" value="100"></div><div class="field"><label>Calories for default serving</label><input data-c-cal type="number" min="0" step="0.1"></div><div class="field"><label>Protein (g)</label><input data-c-protein type="number" min="0" step="0.1"></div><div class="field"><label>Carbs (g)</label><input data-c-carbs type="number" min="0" step="0.1"></div><div class="field"><label>Fat (g)</label><input data-c-fat type="number" min="0" step="0.1"></div></div><div class="serving-options-builder"><div class="serving-option-builder-header"><div><h3>Additional serving options</h3><p class="page-copy">${servingOptionHelpText()}</p></div><button type="button" class="ghost-button" data-add-serving-option>+ Add option</button></div><div data-serving-option-list></div></div><div class="field"><label>When an exact option is not provided</label><select data-c-conversion><option value="none" selected>Exact servings only</option><option value="estimate">Allow MacroSync auto conversions</option></select><p class="field-help">Estimated conversions are based on the serving weight and may not match the source exactly.</p></div><label class="toggle-row"><input data-c-personal type="checkbox" checked><span><strong>Save to My Foods</strong><small>Keep a private copy in your personal food database.</small></span></label><label class="toggle-row"><input data-c-publish type="checkbox" checked><span><strong>Publish to Community Foods</strong><small>Make the food searchable by other MacroSync users.</small></span></label><p class="save-status" data-c-status></p><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-c-save type="button">Save food</button></div></section>`;
     document.body.appendChild(overlay);overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());attachServingOptionEditor(overlay);
@@ -1520,9 +1600,10 @@ const PulsePlateApp = (() => {
   }
   async function addRecentFood(food){
     const meal=selectedLoggingMeal||userMeals[0]?.name||'Meal 1';
-    const target={user_id:user.id,logged_date:dateKey(selectedDate),meal,food_name:food.food_name,serving:food.serving||'1 serving',fdc_id:food.fdc_id||null,source:food.source||'unknown',source_id:food.source_id||'',serving_amount:food.serving_amount||parseServingAmount(food.serving)||1,serving_unit:food.serving_unit||'serving',serving_grams:food.serving_grams||null,brand_name:food.brand_name||null,store_name:food.store_name||null,calories:Number(food.calories||0),protein:Number(food.protein||0),carbs:Number(food.carbs||0),fat:Number(food.fat||0)};
-    const {error}=await supabase.from('food_entries').insert(target); if(error){alert(error.message);return;}
-    await trackEvent('food_logged',{source:target.source,from_recent:true}); await renderSelectedDateEntries(); await renderRecentFoods();
+    const targetDates=getQuickAddTargetDates();
+    const targets=targetDates.map(targetDate=>({user_id:user.id,logged_date:dateKey(targetDate),meal,food_name:food.food_name,serving:food.serving||'1 serving',fdc_id:food.fdc_id||null,source:food.source||'unknown',source_id:food.source_id||'',serving_amount:food.serving_amount||parseServingAmount(food.serving)||1,serving_unit:food.serving_unit||'serving',serving_grams:food.serving_grams||null,brand_name:food.brand_name||null,store_name:food.store_name||null,calories:Number(food.calories||0),protein:Number(food.protein||0),carbs:Number(food.carbs||0),fat:Number(food.fat||0)}));
+    const {error}=await supabase.from('food_entries').insert(targets); if(error){showNoticeModal(error.message);return;}
+    await trackEvent('food_logged',{source:targets[0].source,from_recent:true,entries_added:targets.length,quick_add_mode:quickAddMode}); await renderSelectedDateEntries(); await renderRecentFoods();
   }
 
   async function renderPersonalFoods() {
@@ -1576,7 +1657,7 @@ const PulsePlateApp = (() => {
   }
 
   async function deleteSavedMeal(meal) {
-    const confirmed = window.confirm(`Delete saved meal “${meal.name}”? This cannot be undone.`);
+    const confirmed = await showConfirmModal({ title: 'Delete saved meal?', message: `“${meal.name}” will be permanently deleted. This cannot be undone.`, confirmLabel: 'Delete saved meal', danger: true });
     if (!confirmed) return;
     const { error } = await supabase.from('saved_meals').delete().eq('id', meal.id).eq('user_id', user.id);
     if (error) { showToast(`Saved meal could not be deleted: ${error.message}`, 'error'); return; }
@@ -1611,7 +1692,7 @@ const PulsePlateApp = (() => {
     overlay.querySelector('[data-remove-selected-saved-items]')?.addEventListener('click', async () => {
       const ids = [...overlay.querySelectorAll('[data-saved-meal-item-select]:checked')].map(input => input.dataset.savedMealItemSelect);
       if (!ids.length) { showToast('Select at least one food first.', 'error'); return; }
-      if (!window.confirm(`Remove ${ids.length} selected food item${ids.length === 1 ? '' : 's'} from this saved meal?`)) return;
+      if (!await showConfirmModal({ title: 'Remove selected foods?', message: `This will remove ${ids.length} selected food item${ids.length === 1 ? '' : 's'} from this saved meal.`, confirmLabel: `Remove ${ids.length} item${ids.length === 1 ? '' : 's'}`, danger: true })) return;
       const button = overlay.querySelector('[data-remove-selected-saved-items]');
       button.disabled = true;
       const { error } = await supabase.from('saved_meal_items').delete().in('id', ids).eq('saved_meal_id', meal.id).eq('user_id', user.id);
@@ -1623,6 +1704,8 @@ const PulsePlateApp = (() => {
     });
     overlay.querySelectorAll('[data-remove-saved-meal-item]').forEach(button => button.onclick = async () => {
       const itemId = button.dataset.removeSavedMealItem;
+      const rowName = button.closest('.saved-meal-edit-item')?.querySelector('strong')?.textContent || 'this food';
+      if (!await showConfirmModal({ title: 'Remove food from saved meal?', message: `${rowName} will be removed from this saved meal.`, confirmLabel: 'Remove food', danger: true })) return;
       button.disabled = true;
       const { error } = await supabase.from('saved_meal_items').delete().eq('id', itemId).eq('saved_meal_id', meal.id).eq('user_id', user.id);
       if (error) { button.disabled = false; showToast(`Food could not be removed: ${error.message}`, 'error'); return; }
@@ -1746,6 +1829,111 @@ const PulsePlateApp = (() => {
     return buildExternalAutoConversions(food, []);
   }
 
+  async function quickAddSearchedFood(food, source) {
+    const actualSource = source === 'external' ? (food.source || 'usda') : source;
+    const meal = selectedLoggingMeal || userMeals[0]?.name || 'Meal 1';
+    const targetDates = getQuickAddTargetDates();
+    const today = new Date(); today.setHours(0,0,0,0);
+    const maxDate = addDays(today, 2);
+    if (targetDates.some(d => d > maxDate || (d > today && !planAheadEnabled))) {
+      showToast('Turn on Planning ahead before adding food to a future date. You can plan up to 2 days ahead.', 'error');
+      return;
+    }
+
+    let amount = 1;
+    let unit = 'serving';
+    let grams = null;
+    let values = { calories: 0, protein: 0, carbs: 0, fat: 0 };
+
+    if (actualSource === 'personal') {
+      amount = Number(food.serving_amount || 1);
+      unit = food.serving_unit || 'serving';
+      grams = Number(food.serving_grams) || null;
+      values = {
+        calories: Number(food.calories) || 0,
+        protein: Number(food.protein) || 0,
+        carbs: Number(food.carbs) || 0,
+        fat: Number(food.fat) || 0
+      };
+    } else if (actualSource === 'community') {
+      const option = Array.isArray(food.serving_options) && food.serving_options.length ? food.serving_options[0] : null;
+      amount = Number(option?.amount || 1);
+      unit = option?.unit || 'serving';
+      grams = Number(option?.grams) || 100;
+      values = {
+        calories: Number(option?.calories ?? food.calories_per_100g * grams / 100) || 0,
+        protein: Number(option?.protein ?? food.protein_per_100g * grams / 100) || 0,
+        carbs: Number(option?.carbs ?? food.carbs_per_100g * grams / 100) || 0,
+        fat: Number(option?.fat ?? food.fat_per_100g * grams / 100) || 0
+      };
+    } else {
+      amount = 1;
+      unit = food.servingUnit || 'g';
+      grams = Number(food.servingSize) > 0 ? Number(food.servingSize) : 100;
+      const n = food.nutrients || {};
+      const multiplier = grams / 100;
+      values = {
+        calories: Number(n.calories || 0) * multiplier,
+        protein: Number(n.protein || 0) * multiplier,
+        carbs: Number(n.carbs || 0) * multiplier,
+        fat: Number(n.fat || 0) * multiplier
+      };
+    }
+
+    const servingLabel = `${moneyless(amount)} ${unit}`;
+    const sourceId = String(food.id ?? '');
+    const rows = targetDates.map(targetDate => ({
+      user_id: user.id,
+      logged_date: dateKey(targetDate),
+      meal,
+      food_name: food.name,
+      serving: servingLabel,
+      fdc_id: actualSource === 'usda' ? Number(food.id) : (food.fdc_id ? Number(food.fdc_id) : null),
+      source: actualSource,
+      source_id: sourceId,
+      serving_amount: amount,
+      serving_unit: unit,
+      serving_grams: grams,
+      brand_name: food.brand_name || food.brand || null,
+      store_name: food.store_name || null,
+      calories: values.calories,
+      protein: values.protein,
+      carbs: values.carbs,
+      fat: values.fat
+    }));
+
+    const { error } = await supabase.from('food_entries').insert(rows);
+    if (error) { showToast(`Quick add failed: ${error.message}`, 'error'); return; }
+    await trackEvent('food_logged', { source: actualSource, entries_added: rows.length, planned_days: targetDates.length, quick_add_mode: quickAddMode, searched_food_quick_add: true });
+    await renderSelectedDateEntries();
+    await renderRecentFoods();
+    showToast(`${food.name} added as ${servingLabel} to ${meal} for ${quickAddModeLabel()}. You can edit the amount later.`);
+  }
+
+  function getQuickAddTargetDates() {
+    const today = new Date(); today.setHours(0,0,0,0);
+    if (!planAheadEnabled || quickAddMode === 'selected') {
+      const selectedBase = new Date(selectedDate); selectedBase.setHours(0,0,0,0);
+      return [selectedBase];
+    }
+    if (quickAddMode === 'day1') return [addDays(today, 1)];
+    if (quickAddMode === 'day2') return [addDays(today, 2)];
+    if (quickAddMode === 'both') return [addDays(today, 1), addDays(today, 2)];
+    const selectedBase = new Date(selectedDate); selectedBase.setHours(0,0,0,0);
+    return [selectedBase];
+  }
+
+  function quickAddModeLabel() {
+    if (!planAheadEnabled || quickAddMode === 'selected') {
+      const todayKey = dateKey(new Date());
+      return dateKey(selectedDate) === todayKey ? 'Selected date (today)' : `Selected date (${formatDate(selectedDate)})`;
+    }
+    if (quickAddMode === 'day1') return `1 day ahead (${formatDate(addDays(new Date(), 1))})`;
+    if (quickAddMode === 'day2') return `2 days ahead (${formatDate(addDays(new Date(), 2))})`;
+    if (quickAddMode === 'both') return `Both 1 and 2 days ahead (${formatDate(addDays(new Date(), 1))} and ${formatDate(addDays(new Date(), 2))})`;
+    return 'Selected date';
+  }
+
   async function openServingModal(food, source) {
     const actualSource = source === 'external' ? (food.source || 'usda') : source;
     const n = actualSource === 'personal'
@@ -1774,21 +1962,8 @@ const PulsePlateApp = (() => {
     const overlay=document.createElement('div');overlay.className='modal-overlay';
     const sourceLabel = actualSource==='personal'?'My Food':actualSource==='community'?'Community Food':actualSource==='openfoodfacts'?'Open Food Facts':actualSource==='cnf'?'Health Canada CNF':actualSource==='cofid'?'UK CoFID':'USDA Food';
     const weightConversionsAllowed = actualSource !== 'personal' && actualSource !== 'community' || conversionMode !== 'none';
-    const todayKey = dateKey(new Date());
-    const selectedKey = dateKey(selectedDate);
-    const selectedIsToday = selectedKey === todayKey;
-    const futureDateOptions = planAheadEnabled ? `
-      <div class="field" data-log-date-choice-wrap>
-        <label for="servingLogDate">Add food to</label>
-        <select id="servingLogDate">
-          <option value="selected">${selectedIsToday ? 'Today' : `Selected date (${formatDate(selectedDate)})`}</option>
-          <option value="day1">1 day ahead (${formatDate(addDays(new Date(),1))})</option>
-          <option value="day2">2 days ahead (${formatDate(addDays(new Date(),2))})</option>
-          <option value="both">Both 1 and 2 days ahead</option>
-        </select>
-        <p class="field-help">Planning ahead can add the same food to one or both future days. Future entries are separate log entries.</p>
-      </div>` : '';
-    overlay.innerHTML=`<section class="modal-card serving-modal" role="dialog" aria-modal="true" aria-labelledby="servingTitle"><button class="modal-close" type="button" data-close-modal aria-label="Close">×</button><p class="eyebrow">${sourceLabel}</p><h2 id="servingTitle">${escapeHtml(food.name)}</h2>${food.brand_name||food.brand?`<div class="serving-reference"><strong>${escapeHtml(food.brand_name||food.brand)}</strong>${food.store_name?`<span>Store: ${escapeHtml(food.store_name)}</span>`:''}</div>`:''}<div class="serving-reference"><strong>Adding to: ${escapeHtml(selectedLoggingMeal || userMeals[0]?.name || 'Meal 1')}</strong><span>${actualSource==='personal'||actualSource==='community'?'Choose an exact saved serving whenever possible.':externalOptions.length?'MacroSync found serving measurements for this food and will use them before estimated conversions.':'MacroSync can automatically convert this external food to common measurements. Source-provided measurements are preferred; generated household conversions are marked as estimated.'}</span></div><div class="form-grid serving-controls"><div class="field"><label for="servingAmount">Amount</label><input id="servingAmount" type="number" min="0.01" step="0.01" value="${defaultAmount}"></div><div class="field"><label for="servingUnit">Serving type</label><select id="servingUnit">${uniqueOptions.map((o,i)=>`<option value="option-${i}" ${i===defaultUnitIndex?'selected':''}>${moneyless(o.amount)} ${escapeHtml(o.unit)}${o.grams?` (${moneyless(o.grams)} g)`:''}${o.sourceProvided?' · source measure':o.autoGenerated&&o.estimated?' · estimated auto':' · auto'}</option>`).join('')}</select></div>${futureDateOptions}</div><p class="serving-help">Use source-provided measurements whenever available. MacroSync converts every external food through gram weights and provides common measurements such as cups, tablespoons, teaspoons, ml, grams, and ounces. Food-specific units such as slices, pieces, eggs, or scoops are included when the source provides their weight.</p><p class="serving-conversion-warning">${actualSource==='personal'||actualSource==='community'?(conversionMode==='none'?'Only exact creator-provided serving choices are available for this user-added food.':'MacroSync auto conversions are estimates unless an exact serving was provided.'):'External foods always have MacroSync auto conversions. Source-provided measurements are preferred; generated household conversions are marked as estimated.'}</p>${actualSource==='usda'&&food.nutritionVerification?.warnings?.length?`<p class="save-status">USDA reports a consistency warning for this food. The record passed the hard validation checks, but the calorie/macro values may differ because of rounding, fiber, or other USDA calculation methods.</p>`:''}<div class="nutrition-summary" data-serving-preview></div><div class="modal-actions"><button class="ghost-button" type="button" data-close-modal>Cancel</button><button class="primary-button" type="button" data-confirm-serving>Add to ${escapeHtml(selectedLoggingMeal || userMeals[0]?.name || 'meal')}</button></div></section>`;
+    const quickAddSummary = planAheadEnabled ? `<div class="field"><label>Quick add destination</label><p class="field-help"><strong>${escapeHtml(quickAddModeLabel())}</strong> — chosen before opening this food.</p></div>` : '';
+    overlay.innerHTML=`<section class="modal-card serving-modal" role="dialog" aria-modal="true" aria-labelledby="servingTitle"><button class="modal-close" type="button" data-close-modal aria-label="Close">×</button><p class="eyebrow">${sourceLabel}</p><h2 id="servingTitle">${escapeHtml(food.name)}</h2>${food.brand_name||food.brand?`<div class="serving-reference"><strong>${escapeHtml(food.brand_name||food.brand)}</strong>${food.store_name?`<span>Store: ${escapeHtml(food.store_name)}</span>`:''}</div>`:''}<div class="serving-reference"><strong>Adding to: ${escapeHtml(selectedLoggingMeal || userMeals[0]?.name || 'Meal 1')}</strong><span>${actualSource==='personal'||actualSource==='community'?'Choose an exact saved serving whenever possible.':externalOptions.length?'MacroSync found serving measurements for this food and will use them before estimated conversions.':'MacroSync can automatically convert this external food to common measurements. Source-provided measurements are preferred; generated household conversions are marked as estimated.'}</span></div><div class="form-grid serving-controls"><div class="field"><label for="servingAmount">Amount</label><input id="servingAmount" type="number" min="0.01" step="0.01" value="${defaultAmount}"></div><div class="field"><label for="servingUnit">Serving type</label><select id="servingUnit">${uniqueOptions.map((o,i)=>`<option value="option-${i}" ${i===defaultUnitIndex?'selected':''}>${moneyless(o.amount)} ${escapeHtml(o.unit)}${o.grams?` (${moneyless(o.grams)} g)`:''}${o.sourceProvided?' · source measure':o.autoGenerated&&o.estimated?' · estimated auto':' · auto'}</option>`).join('')}</select></div>${quickAddSummary}</div><p class="serving-help">Use source-provided measurements whenever available. MacroSync converts every external food through gram weights and provides common measurements such as cups, tablespoons, teaspoons, ml, grams, and ounces. Food-specific units such as slices, pieces, eggs, or scoops are included when the source provides their weight.</p><p class="serving-conversion-warning">${actualSource==='personal'||actualSource==='community'?(conversionMode==='none'?'Only exact creator-provided serving choices are available for this user-added food.':'MacroSync auto conversions are estimates unless an exact serving was provided.'):'External foods always have MacroSync auto conversions. Source-provided measurements are preferred; generated household conversions are marked as estimated.'}</p>${actualSource==='usda'&&food.nutritionVerification?.warnings?.length?`<p class="save-status">USDA reports a consistency warning for this food. The record passed the hard validation checks, but the calorie/macro values may differ because of rounding, fiber, or other USDA calculation methods.</p>`:''}<div class="nutrition-summary" data-serving-preview></div><div class="modal-actions"><button class="ghost-button" type="button" data-close-modal>Cancel</button><button class="primary-button" type="button" data-confirm-serving>Add to ${escapeHtml(selectedLoggingMeal || userMeals[0]?.name || 'meal')}</button></div></section>`;
     document.body.appendChild(overlay);
     const amountInput=overlay.querySelector('#servingAmount'),unitSelect=overlay.querySelector('#servingUnit'),preview=overlay.querySelector('[data-serving-preview]');
     function calculate(){
@@ -1804,15 +1979,13 @@ const PulsePlateApp = (() => {
       const result=calculate();
       const meal=selectedLoggingMeal||userMeals[0]?.name||'Meal 1';
       const sourceId=String(food.id??'');
-      const dateChoice=overlay.querySelector('#servingLogDate')?.value||'selected';
+      const targetDates = getQuickAddTargetDates();
       const today=new Date(); today.setHours(0,0,0,0);
-      const selectedBase=new Date(selectedDate); selectedBase.setHours(0,0,0,0);
-      const targetDates = dateChoice==='day1' ? [addDays(today,1)] : dateChoice==='day2' ? [addDays(today,2)] : dateChoice==='both' ? [addDays(today,1),addDays(today,2)] : [selectedBase];
       const maxDate=addDays(today,2);
-      if(targetDates.some(d=>d>maxDate || (d>today && !planAheadEnabled))){alert('Turn on Planning ahead to add foods to future dates. You can plan up to 2 days ahead.');return;}
+      if(targetDates.some(d=>d>maxDate || (d>today && !planAheadEnabled))){showNoticeModal('Turn on Planning ahead before adding food to a future date. You can plan up to 2 days ahead.');return;}
       const rows=targetDates.map(targetDate=>({user_id:user.id,logged_date:dateKey(targetDate),meal,food_name:food.name,serving:result.display,fdc_id:actualSource==='usda'?Number(food.id):(food.fdc_id?Number(food.fdc_id):null),source:actualSource,source_id:sourceId,serving_amount:result.amount,serving_unit:result.option?.unit||result.unit,serving_grams:result.option?.grams||null,brand_name:food.brand_name||null,store_name:food.store_name||null,calories:result.values.calories,protein:result.values.protein,carbs:result.values.carbs,fat:result.values.fat}));
-      const{error}=await supabase.from('food_entries').insert(rows);if(error){alert(error.message);return;}
-      await trackEvent('food_logged',{source:actualSource,entries_added:rows.length,planned_days:dateChoice});
+      const{error}=await supabase.from('food_entries').insert(rows);if(error){showNoticeModal(error.message);return;}
+      await trackEvent('food_logged',{source:actualSource,entries_added:rows.length,planned_days:targetDates.length,quick_add_mode:quickAddMode});
       overlay.remove();await renderSelectedDateEntries();await renderRecentFoods();await renderPersonalFoods();
     };
   }
@@ -1842,13 +2015,15 @@ const PulsePlateApp = (() => {
     document.body.appendChild(overlay); overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());
     overlay.querySelector('[data-confirm-saved-meal]').onclick=async()=>{
       const mealName=overlay.querySelector('#savedMealDestination').value;
-      const items=(meal.saved_meal_items||[]).map(item=>({user_id:user.id,logged_date:dateKey(selectedDate),meal:mealName,food_name:item.food_name,serving:item.serving,fdc_id:item.fdc_id,source:item.source||'saved_meal',source_id:item.source_id||'',serving_amount:item.serving_amount||parseServingAmount(item.serving)||1,serving_unit:item.serving_unit||'serving',serving_grams:item.serving_grams||null,brand_name:item.brand_name||null,store_name:item.store_name||null,calories:item.calories,protein:item.protein,carbs:item.carbs,fat:item.fat}));
+      const targetDates=getQuickAddTargetDates();
+      const sourceItems=meal.saved_meal_items||[];
+      const items=targetDates.flatMap(targetDate=>sourceItems.map(item=>({user_id:user.id,logged_date:dateKey(targetDate),meal:mealName,food_name:item.food_name,serving:item.serving,fdc_id:item.fdc_id,source:item.source||'saved_meal',source_id:item.source_id||'',serving_amount:item.serving_amount||parseServingAmount(item.serving)||1,serving_unit:item.serving_unit||'serving',serving_grams:item.serving_grams||null,brand_name:item.brand_name||null,store_name:item.store_name||null,calories:item.calories,protein:item.protein,carbs:item.carbs,fat:item.fat})));
       if(!items.length){ showToast('This saved meal has no foods to add.', 'error'); return; }
       const button=overlay.querySelector('[data-confirm-saved-meal]'); button.disabled=true;
       const {error}=await supabase.from('food_entries').insert(items);
       button.disabled=false;
       if(error){ showToast(`Saved meal could not be added: ${error.message}`, 'error'); return; }
-      overlay.remove(); await renderSelectedDateEntries(); showToast(`${meal.name} added to ${mealName}.`);
+      overlay.remove(); await renderSelectedDateEntries(); showToast(`${meal.name} added to ${mealName} for ${quickAddModeLabel()}.`);
     };
   }
 
@@ -2408,7 +2583,7 @@ const PulsePlateApp = (() => {
     });
   }
 
-  async function renderTrainers(){ const list=$('#trainerList'); if(!list)return; const run=async()=>{list.innerHTML='<p class="page-copy">Searching…</p>'; const {data,error}=await supabase.rpc('search_trainers',{p_query:$('#trainerSearch').value.trim(),p_training_type:$('#trainerType').value?Number($('#trainerType').value):null,p_price_range:$('#trainerPrice').value?Number($('#trainerPrice').value):null}); if(error)throw error; list.innerHTML=data?.length?data.map(renderTrainerCard).join(''):'<p class="page-copy">No public trainers matched your search.</p>'; list.querySelectorAll('[data-view-trainer]').forEach(b=>b.onclick=()=>showTrainerProfile(b.dataset.viewTrainer).catch(e=>alert(e.message)));}; $('#trainerSearchButton').onclick=()=>run().catch(e=>{list.innerHTML=`<p class="settings-status">${escapeHtml(e.message)}</p>`}); $('#trainerSearch').onkeydown=e=>{if(e.key==='Enter')run().catch(console.error)}; await run(); }
+  async function renderTrainers(){ const list=$('#trainerList'); if(!list)return; const run=async()=>{list.innerHTML='<p class="page-copy">Searching…</p>'; const {data,error}=await supabase.rpc('search_trainers',{p_query:$('#trainerSearch').value.trim(),p_training_type:$('#trainerType').value?Number($('#trainerType').value):null,p_price_range:$('#trainerPrice').value?Number($('#trainerPrice').value):null}); if(error)throw error; list.innerHTML=data?.length?data.map(renderTrainerCard).join(''):'<p class="page-copy">No public trainers matched your search.</p>'; list.querySelectorAll('[data-view-trainer]').forEach(b=>b.onclick=()=>showTrainerProfile(b.dataset.viewTrainer).catch(e=>showNoticeModal(e.message)));}; $('#trainerSearchButton').onclick=()=>run().catch(e=>{list.innerHTML=`<p class="settings-status">${escapeHtml(e.message)}</p>`}); $('#trainerSearch').onkeydown=e=>{if(e.key==='Enter')run().catch(console.error)}; await run(); }
 
   async function renderSettings(){
     const nameInput = $('#settingsDisplayName');
@@ -2498,10 +2673,10 @@ const PulsePlateApp = (() => {
     if (emailSearchToggle) emailSearchToggle.checked = profile?.email_search_enabled !== false;
     emailSearchToggle?.addEventListener('change', async () => {
       const { error } = await supabase.from('profiles').update({ email_search_enabled: emailSearchToggle.checked }).eq('id', user.id);
-      if (error) { emailSearchToggle.checked = !emailSearchToggle.checked; alert(error.message); }
+      if (error) { emailSearchToggle.checked = !emailSearchToggle.checked; showNoticeModal(error.message); }
     });
     $('[data-delete-account]')?.addEventListener('click', async () => {
-      if (!confirm('Delete your MacroSync account and all of its application data permanently? This cannot be undone.')) return;
+      if (!await showConfirmModal({ title: 'Delete your account?', message: 'Your MacroSync account and application data will be permanently deleted. This cannot be undone.', confirmLabel: 'Delete account', danger: true })) return;
       const ds = $('[data-delete-account-status]'); if (ds) ds.textContent = 'Deleting account…';
       const { data, error } = await supabase.rpc('delete_my_account');
       if (error) { if (ds) ds.textContent = error.message; return; }
@@ -2534,7 +2709,7 @@ const PulsePlateApp = (() => {
         </article>`).join('') : '<p class="empty-state">No feedback has been submitted yet.</p>';
       inboxStatus.textContent = '';
       box.querySelectorAll('[data-mark-feedback-read]').forEach(b => b.onclick = async () => { await supabase.from('feedback').update({read_at:new Date().toISOString()}).eq('id',b.dataset.markFeedbackRead); await loadFeedbackInbox(); });
-      box.querySelectorAll('[data-delete-feedback]').forEach(b => b.onclick = async () => { if (!confirm('Delete this feedback permanently?')) return; const {error}=await supabase.from('feedback').delete().eq('id',b.dataset.deleteFeedback); if(error) { inboxStatus.textContent=error.message; return; } await loadFeedbackInbox(); });
+      box.querySelectorAll('[data-delete-feedback]').forEach(b => b.onclick = async () => { if (!await showConfirmModal({ title: 'Delete feedback?', message: 'This feedback will be permanently deleted.', confirmLabel: 'Delete feedback', danger: true })) return; const {error}=await supabase.from('feedback').delete().eq('id',b.dataset.deleteFeedback); if(error) { inboxStatus.textContent=error.message; return; } await loadFeedbackInbox(); });
     }
     $('[data-refresh-feedback]')?.addEventListener('click', loadFeedbackInbox);
     if (isAdmin) {
@@ -2633,7 +2808,7 @@ const PulsePlateApp = (() => {
     const points=weights.map((w,i)=>{const x=pad+(i/(Math.max(weights.length-1,1)))*(width-pad*2);const y=pad+((max-Number(w.weight))/range)*(height-pad*2);return {x,y,w};});
     const poly=points.map(p=>`${p.x},${p.y}`).join(' ');
     chart.innerHTML=`<svg class="weight-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Weight history"><line x1="${pad}" y1="${height-pad}" x2="${width-pad}" y2="${height-pad}" class="chart-axis"/><polyline points="${poly}" class="weight-line" fill="none"/>${points.map(p=>`<circle cx="${p.x}" cy="${p.y}" r="4" class="weight-point"><title>${moneyless(p.w.weight)} lb · ${p.w.logged_date}</title></circle>`).join('')}<text x="${pad}" y="${height-8}" class="chart-label">${weights[0].logged_date}</text><text x="${width-pad}" y="${height-8}" text-anchor="end" class="chart-label">${weights[weights.length-1].logged_date}</text><text x="${pad}" y="18" class="chart-label">${moneyless(max)} lb</text><text x="${pad}" y="${height-28}" class="chart-label">${moneyless(min)} lb</text></svg>`;
-    const history=$('[data-weight-history]'); if(history) { history.innerHTML=weights.slice().reverse().map(w=>`<div class="history-row"><div><strong>${moneyless(w.weight)} lb</strong><span>${w.logged_date}</span></div><button class="text-button danger-button" type="button" data-delete-weight="${w.id}">Delete</button></div>`).join(''); history.querySelectorAll('[data-delete-weight]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this weight entry permanently?'))return;const {error}=await supabase.from('weight_logs').delete().eq('id',b.dataset.deleteWeight).eq('user_id',user.id);if(error)return alert(error.message);await renderProgress();}); }
+    const history=$('[data-weight-history]'); if(history) { history.innerHTML=weights.slice().reverse().map(w=>`<div class="history-row"><div><strong>${moneyless(w.weight)} lb</strong><span>${w.logged_date}</span></div><button class="text-button danger-button" type="button" data-delete-weight="${w.id}">Delete</button></div>`).join(''); history.querySelectorAll('[data-delete-weight]').forEach(b=>b.onclick=async()=>{if(!await showConfirmModal({ title: 'Delete weight entry?', message: 'This weight entry will be permanently deleted.', confirmLabel: 'Delete entry', danger: true }))return;const {error}=await supabase.from('weight_logs').delete().eq('id',b.dataset.deleteWeight).eq('user_id',user.id);if(error)return showNoticeModal(error.message);await renderProgress();}); }
   }
 
   function renderMeasurements(rows){
@@ -2642,19 +2817,19 @@ const PulsePlateApp = (() => {
     const order=['Waist','Hips','Chest','Left arm','Right arm','Left thigh','Right thigh','Neck'];
     const keys=[...order.filter(k=>latest.has(k)),...Array.from(latest.keys()).filter(k=>!order.includes(k))];
     list.innerHTML=keys.length?keys.map(k=>{const r=latest.get(k);return `<article class="measurement-card"><div><strong>${escapeHtml(k)}</strong><span>${moneyless(r.value)} ${r.unit}</span></div><small>${r.logged_date}</small><div class="measurement-actions"><button type="button" class="text-button" data-measurement-history="${escapeHtml(k)}">History</button><button type="button" class="text-button danger-button" data-delete-measurement="${r.id}">Delete latest</button></div></article>`}).join(''):'<p class="page-copy">No measurements logged yet.</p>';
-    list.querySelectorAll('[data-measurement-history]').forEach(b=>b.onclick=()=>showMeasurementHistory(b.dataset.measurementHistory,rows)); list.querySelectorAll('[data-delete-measurement]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this measurement entry permanently?'))return;const {error}=await supabase.from('body_measurements').delete().eq('id',b.dataset.deleteMeasurement).eq('user_id',user.id);if(error)return alert(error.message);await renderProgress();});
+    list.querySelectorAll('[data-measurement-history]').forEach(b=>b.onclick=()=>showMeasurementHistory(b.dataset.measurementHistory,rows)); list.querySelectorAll('[data-delete-measurement]').forEach(b=>b.onclick=async()=>{if(!await showConfirmModal({ title: 'Delete measurement?', message: 'This measurement entry will be permanently deleted.', confirmLabel: 'Delete entry', danger: true }))return;const {error}=await supabase.from('body_measurements').delete().eq('id',b.dataset.deleteMeasurement).eq('user_id',user.id);if(error)return showNoticeModal(error.message);await renderProgress();});
   }
 
   function openWeightModal(){
-    const overlay=document.createElement('div'); overlay.className='modal-overlay'; overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Weight</p><h2>Log weight</h2><div class="field"><label>Weight (lb)</label><input id="progressWeightInput" type="number" min="1" step="0.1" autofocus></div><div class="field"><label>Date</label><input id="progressWeightDate" type="date" value="${dateKey(new Date())}"></div><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-save-weight type="button">Save</button></div></section>`; document.body.appendChild(overlay); overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove()); overlay.querySelector('[data-save-weight]').onclick=async()=>{const weight=Number(overlay.querySelector('#progressWeightInput').value),logged_date=overlay.querySelector('#progressWeightDate').value;if(!weight||!logged_date)return alert('Enter a valid weight and date.');const {error}=await supabase.from('weight_logs').insert({user_id:user.id,weight,logged_date});if(error)return alert(error.message);overlay.remove();await renderProgress();};
+    const overlay=document.createElement('div'); overlay.className='modal-overlay'; overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Weight</p><h2>Log weight</h2><div class="field"><label>Weight (lb)</label><input id="progressWeightInput" type="number" min="1" step="0.1" autofocus></div><div class="field"><label>Date</label><input id="progressWeightDate" type="date" value="${dateKey(new Date())}"></div><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-save-weight type="button">Save</button></div></section>`; document.body.appendChild(overlay); overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove()); overlay.querySelector('[data-save-weight]').onclick=async()=>{const weight=Number(overlay.querySelector('#progressWeightInput').value),logged_date=overlay.querySelector('#progressWeightDate').value;if(!weight||!logged_date)return showNoticeModal('Enter a valid weight and date.');const {error}=await supabase.from('weight_logs').insert({user_id:user.id,weight,logged_date});if(error)return showNoticeModal(error.message);overlay.remove();await renderProgress();};
   }
 
   function openMeasurementModal(){
-    const overlay=document.createElement('div'); overlay.className='modal-overlay'; overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Measurements</p><h2>Add measurement</h2><div class="form-grid"><div class="field"><label>Measurement</label><select id="measurementType"><option>Waist</option><option>Hips</option><option>Chest</option><option>Left arm</option><option>Right arm</option><option>Left thigh</option><option>Right thigh</option><option>Neck</option><option>Custom</option></select></div><div class="field"><label>Value</label><input id="measurementValue" type="number" min="0.1" step="0.1"></div><div class="field"><label>Unit</label><select id="measurementUnit"><option value="in">inches</option><option value="cm">centimeters</option></select></div><div class="field"><label>Date</label><input id="measurementDate" type="date" value="${dateKey(new Date())}"></div></div><div class="field" id="customMeasurementWrap" hidden><label>Custom name</label><input id="customMeasurementName" maxlength="40"></div><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-save-measurement type="button">Save</button></div></section>`; document.body.appendChild(overlay); overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove()); const type=overlay.querySelector('#measurementType'), custom=overlay.querySelector('#customMeasurementWrap'); type.onchange=()=>custom.hidden=type.value!=='Custom'; overlay.querySelector('[data-save-measurement]').onclick=async()=>{const measurement_type=type.value==='Custom'?overlay.querySelector('#customMeasurementName').value.trim():type.value;const value=Number(overlay.querySelector('#measurementValue').value),unit=overlay.querySelector('#measurementUnit').value,logged_date=overlay.querySelector('#measurementDate').value;if(!measurement_type||!value||!logged_date)return alert('Complete the measurement fields.');const {error}=await supabase.from('body_measurements').insert({user_id:user.id,measurement_type,value,unit,logged_date});if(error)return alert(error.message);overlay.remove();await renderProgress();};
+    const overlay=document.createElement('div'); overlay.className='modal-overlay'; overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Measurements</p><h2>Add measurement</h2><div class="form-grid"><div class="field"><label>Measurement</label><select id="measurementType"><option>Waist</option><option>Hips</option><option>Chest</option><option>Left arm</option><option>Right arm</option><option>Left thigh</option><option>Right thigh</option><option>Neck</option><option>Custom</option></select></div><div class="field"><label>Value</label><input id="measurementValue" type="number" min="0.1" step="0.1"></div><div class="field"><label>Unit</label><select id="measurementUnit"><option value="in">inches</option><option value="cm">centimeters</option></select></div><div class="field"><label>Date</label><input id="measurementDate" type="date" value="${dateKey(new Date())}"></div></div><div class="field" id="customMeasurementWrap" hidden><label>Custom name</label><input id="customMeasurementName" maxlength="40"></div><div class="modal-actions"><button class="ghost-button" data-close type="button">Cancel</button><button class="primary-button" data-save-measurement type="button">Save</button></div></section>`; document.body.appendChild(overlay); overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove()); const type=overlay.querySelector('#measurementType'), custom=overlay.querySelector('#customMeasurementWrap'); type.onchange=()=>custom.hidden=type.value!=='Custom'; overlay.querySelector('[data-save-measurement]').onclick=async()=>{const measurement_type=type.value==='Custom'?overlay.querySelector('#customMeasurementName').value.trim():type.value;const value=Number(overlay.querySelector('#measurementValue').value),unit=overlay.querySelector('#measurementUnit').value,logged_date=overlay.querySelector('#measurementDate').value;if(!measurement_type||!value||!logged_date)return showNoticeModal('Complete the measurement fields.');const {error}=await supabase.from('body_measurements').insert({user_id:user.id,measurement_type,value,unit,logged_date});if(error)return showNoticeModal(error.message);overlay.remove();await renderProgress();};
   }
 
   function showMeasurementHistory(name,rows){
-    const history=rows.filter(r=>r.measurement_type===name).sort((a,b)=>String(b.logged_date).localeCompare(String(a.logged_date))); const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Measurement history</p><h2>${escapeHtml(name)}</h2><div class="history-list">${history.map(r=>`<div class="history-row"><div><strong>${moneyless(r.value)} ${r.unit}</strong><span>${r.logged_date}</span></div><button class="text-button danger-button" type="button" data-delete-history-measurement="${r.id}">Delete</button></div>`).join('')}</div></section>`;document.body.appendChild(overlay);overlay.querySelector('[data-close]').onclick=()=>overlay.remove(); overlay.querySelectorAll('[data-delete-history-measurement]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this measurement entry permanently?'))return;const {error}=await supabase.from('body_measurements').delete().eq('id',b.dataset.deleteHistoryMeasurement).eq('user_id',user.id);if(error)return alert(error.message);overlay.remove();await renderProgress();});
+    const history=rows.filter(r=>r.measurement_type===name).sort((a,b)=>String(b.logged_date).localeCompare(String(a.logged_date))); const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close type="button">×</button><p class="eyebrow">Measurement history</p><h2>${escapeHtml(name)}</h2><div class="history-list">${history.map(r=>`<div class="history-row"><div><strong>${moneyless(r.value)} ${r.unit}</strong><span>${r.logged_date}</span></div><button class="text-button danger-button" type="button" data-delete-history-measurement="${r.id}">Delete</button></div>`).join('')}</div></section>`;document.body.appendChild(overlay);overlay.querySelector('[data-close]').onclick=()=>overlay.remove(); overlay.querySelectorAll('[data-delete-history-measurement]').forEach(b=>b.onclick=async()=>{if(!await showConfirmModal({ title: 'Delete measurement?', message: 'This measurement entry will be permanently deleted.', confirmLabel: 'Delete entry', danger: true }))return;const {error}=await supabase.from('body_measurements').delete().eq('id',b.dataset.deleteHistoryMeasurement).eq('user_id',user.id);if(error)return showNoticeModal(error.message);overlay.remove();await renderProgress();});
   }
 
   async function renderRecipes(){
@@ -2796,18 +2971,18 @@ const PulsePlateApp = (() => {
 
     builder.querySelector('[data-save-recipe]')?.addEventListener('click',async()=>{
       const name=builder.querySelector('[data-recipe-name]').value.trim(); const servings=Math.max(1,Number(builder.querySelector('[data-recipe-servings]').value)||1); const isPublic=Boolean(builder.querySelector('[data-recipe-public]')?.checked);
-      if(!name||!ingredients.length){alert('Enter a recipe name and add at least one ingredient.');return;}
+      if(!name||!ingredients.length){showNoticeModal('Enter a recipe name and add at least one ingredient.');return;}
       if(editingRecipeId){
-        const {error}=await supabase.from('recipes').update({name,servings,is_public:isPublic}).eq('id',editingRecipeId).eq('user_id',user.id); if(error){alert(error.message);return;}
-        const {error:deleteError}=await supabase.from('recipe_items').delete().eq('recipe_id',editingRecipeId).eq('user_id',user.id); if(deleteError){alert(deleteError.message);return;}
+        const {error}=await supabase.from('recipes').update({name,servings,is_public:isPublic}).eq('id',editingRecipeId).eq('user_id',user.id); if(error){showNoticeModal(error.message);return;}
+        const {error:deleteError}=await supabase.from('recipe_items').delete().eq('recipe_id',editingRecipeId).eq('user_id',user.id); if(deleteError){showNoticeModal(deleteError.message);return;}
         const rows=ingredients.map(i=>({recipe_id:editingRecipeId,user_id:user.id,food_name:i.name,serving:`${moneyless(i.amount)} ${i.unit}`,fdc_id:i.fdc_id,calories:i.calories,protein:i.protein,carbs:i.carbs,fat:i.fat}));
-        const {error:itemError}=await supabase.from('recipe_items').insert(rows); if(itemError){alert(itemError.message);return;}
-        const editedName=name; resetRecipeEditor(); await loadRecipes(list,beginRecipeEdit); alert(`${editedName} was updated.`); return;
+        const {error:itemError}=await supabase.from('recipe_items').insert(rows); if(itemError){showNoticeModal(itemError.message);return;}
+        const editedName=name; resetRecipeEditor(); await loadRecipes(list,beginRecipeEdit); showNoticeModal(`${editedName} was updated.`); return;
       }
-      const {data:recipe,error}=await supabase.from('recipes').insert({user_id:user.id,name,servings,is_public:isPublic}).select('*').single(); if(error){alert(error.message);return;}
+      const {data:recipe,error}=await supabase.from('recipes').insert({user_id:user.id,name,servings,is_public:isPublic}).select('*').single(); if(error){showNoticeModal(error.message);return;}
       const rows=ingredients.map(i=>({recipe_id:recipe.id,user_id:user.id,food_name:i.name,serving:`${moneyless(i.amount)} ${i.unit}`,fdc_id:i.fdc_id,calories:i.calories,protein:i.protein,carbs:i.carbs,fat:i.fat}));
-      const {error:itemError}=await supabase.from('recipe_items').insert(rows); if(itemError){alert(itemError.message);return;}
-      ingredients=[];builder.querySelector('[data-recipe-name]').value='';drawIngredients();await loadRecipes(list,beginRecipeEdit);alert(`${name} was saved.`);
+      const {error:itemError}=await supabase.from('recipe_items').insert(rows); if(itemError){showNoticeModal(itemError.message);return;}
+      ingredients=[];builder.querySelector('[data-recipe-name]').value='';drawIngredients();await loadRecipes(list,beginRecipeEdit);showNoticeModal(`${name} was saved.`);
     });;
   }
 
@@ -2820,7 +2995,7 @@ const PulsePlateApp = (() => {
   }
 
   function openRecipeLogModal(recipe){
-    const items=recipe?.recipe_items||[];if(!recipe||!items.length)return;const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close-modal type="button">×</button><p class="eyebrow">Recipe</p><h2>${escapeHtml(recipe.name)}</h2><div class="form-grid"><div class="field"><label>Servings</label><input data-recipe-log-amount type="number" min="0.25" step="0.25" value="1"></div><div class="field"><label>Meal</label><select data-recipe-log-meal>${mealOptionsMarkup(userMeals[0]?.name || "Meal 1")}</select></div></div><div data-recipe-log-preview class="nutrition-summary"></div><div class="modal-actions"><button class="ghost-button" data-close-modal type="button">Cancel</button><button class="primary-button" data-confirm-recipe type="button">Add to meal</button></div></section>`;document.body.appendChild(overlay);overlay.querySelectorAll('[data-close-modal]').forEach(b=>b.onclick=()=>overlay.remove());const amount=overlay.querySelector('[data-recipe-log-amount]');const preview=overlay.querySelector('[data-recipe-log-preview]');const total=items.reduce((a,i)=>({calories:a.calories+Number(i.calories||0),protein:a.protein+Number(i.protein||0),carbs:a.carbs+Number(i.carbs||0),fat:a.fat+Number(i.fat||0)}),{calories:0,protein:0,carbs:0,fat:0});const per={calories:total.calories/Number(recipe.servings||1),protein:total.protein/Number(recipe.servings||1),carbs:total.carbs/Number(recipe.servings||1),fat:total.fat/Number(recipe.servings||1)};const calc=()=>{const x=Number(amount.value)||1;preview.innerHTML=`<div><strong>${moneyless(per.calories*x)}</strong><span>Calories</span></div><div><strong>${moneyless(per.protein*x)}g</strong><span>Protein</span></div><div><strong>${moneyless(per.carbs*x)}g</strong><span>Carbs</span></div><div><strong>${moneyless(per.fat*x)}g</strong><span>Fat</span></div>`};amount.oninput=calc;calc();overlay.querySelector('[data-confirm-recipe]').onclick=async()=>{const x=Number(amount.value)||1;const meal=overlay.querySelector('[data-recipe-log-meal]').value;const row={user_id:user.id,logged_date:dateKey(selectedDate),meal,food_name:recipe.name,serving:`${moneyless(x)} serving${x===1?'':'s'}`,fdc_id:null,calories:per.calories*x,protein:per.protein*x,carbs:per.carbs*x,fat:per.fat*x};const {error}=await supabase.from('food_entries').insert(row);if(error){alert(error.message);return;}overlay.remove();await renderSelectedDateEntries();};
+    const items=recipe?.recipe_items||[];if(!recipe||!items.length)return;const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close-modal type="button">×</button><p class="eyebrow">Recipe</p><h2>${escapeHtml(recipe.name)}</h2><div class="form-grid"><div class="field"><label>Servings</label><input data-recipe-log-amount type="number" min="0.25" step="0.25" value="1"></div><div class="field"><label>Meal</label><select data-recipe-log-meal>${mealOptionsMarkup(userMeals[0]?.name || "Meal 1")}</select></div></div><div data-recipe-log-preview class="nutrition-summary"></div><div class="modal-actions"><button class="ghost-button" data-close-modal type="button">Cancel</button><button class="primary-button" data-confirm-recipe type="button">Add to meal</button></div></section>`;document.body.appendChild(overlay);overlay.querySelectorAll('[data-close-modal]').forEach(b=>b.onclick=()=>overlay.remove());const amount=overlay.querySelector('[data-recipe-log-amount]');const preview=overlay.querySelector('[data-recipe-log-preview]');const total=items.reduce((a,i)=>({calories:a.calories+Number(i.calories||0),protein:a.protein+Number(i.protein||0),carbs:a.carbs+Number(i.carbs||0),fat:a.fat+Number(i.fat||0)}),{calories:0,protein:0,carbs:0,fat:0});const per={calories:total.calories/Number(recipe.servings||1),protein:total.protein/Number(recipe.servings||1),carbs:total.carbs/Number(recipe.servings||1),fat:total.fat/Number(recipe.servings||1)};const calc=()=>{const x=Number(amount.value)||1;preview.innerHTML=`<div><strong>${moneyless(per.calories*x)}</strong><span>Calories</span></div><div><strong>${moneyless(per.protein*x)}g</strong><span>Protein</span></div><div><strong>${moneyless(per.carbs*x)}g</strong><span>Carbs</span></div><div><strong>${moneyless(per.fat*x)}g</strong><span>Fat</span></div>`};amount.oninput=calc;calc();overlay.querySelector('[data-confirm-recipe]').onclick=async()=>{const x=Number(amount.value)||1;const meal=overlay.querySelector('[data-recipe-log-meal]').value;const row={user_id:user.id,logged_date:dateKey(selectedDate),meal,food_name:recipe.name,serving:`${moneyless(x)} serving${x===1?'':'s'}`,fdc_id:null,calories:per.calories*x,protein:per.protein*x,carbs:per.carbs*x,fat:per.fat*x};const {error}=await supabase.from('food_entries').insert(row);if(error){showNoticeModal(error.message);return;}overlay.remove();await renderSelectedDateEntries();};
   }
 
   async function renderAdmin() {
@@ -2835,7 +3010,7 @@ const PulsePlateApp = (() => {
       if (error) { list.innerHTML=`<p class="page-copy">${esc(error.message)}</p>`; return; }
       const flags=data||[];
       list.innerHTML=flags.length?flags.map(f=>{const isName=f.content_type==='display_name';const actions=isName?'<button class="primary-button" data-admin-action="replace">Change name</button><button class="ghost-button danger-button" data-admin-action="reset_name">Reset name</button>':'<button class="primary-button" data-admin-action="replace">Replace message</button><button class="ghost-button danger-button" data-admin-action="delete">Delete message</button>';return `<article class="admin-flag-item" data-admin-flag="${f.flag_id}"><div class="feedback-item-head"><strong>${esc(isName?'Flagged display name':'Flagged message')}</strong><span>${formatTimestamp(f.created_at)}</span></div><div class="feedback-author">${esc(f.display_name||'Unknown')} · ${esc(f.email||'Email hidden')}</div><p><strong>Reason:</strong> ${esc(f.reason)}</p><div class="admin-content-preview">${esc(f.content||'[content unavailable]')}</div><div class="field"><label>Replacement</label><textarea rows="2" data-admin-replacement></textarea></div><div class="field"><label>Message to user</label><textarea rows="2" data-admin-note placeholder="Explain the action and what the user should do next."></textarea></div><div class="feedback-actions">${actions}<button class="ghost-button" data-admin-status-action="${f.user_id}">Suspend / ban account</button></div></article>`}).join(''):'<p class="empty-state">No open flagged names or messages.</p>';
-      list.querySelectorAll('[data-admin-action]').forEach(btn=>btn.onclick=async()=>{const card=btn.closest('[data-admin-flag]');const {error}=await supabase.rpc('admin_moderation_action',{p_flag_id:Number(card.dataset.adminFlag),p_action:btn.dataset.adminAction,p_replacement:card.querySelector('[data-admin-replacement]')?.value||null,p_note:card.querySelector('[data-admin-note]')?.value||null});if(error){alert(error.message);return;}await loadFlags();});
+      list.querySelectorAll('[data-admin-action]').forEach(btn=>btn.onclick=async()=>{const card=btn.closest('[data-admin-flag]');const {error}=await supabase.rpc('admin_moderation_action',{p_flag_id:Number(card.dataset.adminFlag),p_action:btn.dataset.adminAction,p_replacement:card.querySelector('[data-admin-replacement]')?.value||null,p_note:card.querySelector('[data-admin-note]')?.value||null});if(error){showNoticeModal(error.message);return;}await loadFlags();});
       list.querySelectorAll('[data-admin-status-action]').forEach(btn=>btn.onclick=()=>openAccountStatusModal(btn.dataset.adminStatusAction));
       return flags.length;
     };
@@ -2843,7 +3018,7 @@ const PulsePlateApp = (() => {
       const list=$('[data-admin-reports]'); const {data,error}=await supabase.rpc('admin_list_reports');
       if(error){list.innerHTML=`<p class="page-copy">${esc(error.message)}</p>`;return;}
       const reports=data||[]; list.innerHTML=reports.length?reports.map(r=>`<article class="admin-flag-item" data-report="${r.report_id}" data-reported-user="${r.reported_user_id}"><div class="feedback-item-head"><strong>Report #${r.report_id}</strong><span>${formatTimestamp(r.created_at)}</span></div><div class="feedback-author">Reporter: ${esc(r.reporter_name)} · Reported: ${esc(r.reported_name)}</div><p><strong>Reason:</strong> ${esc(r.reason)}</p><div class="admin-content-preview">${esc(r.message_content||'[message deleted]')}</div><div class="field"><label>Admin note</label><textarea rows="2" data-report-note placeholder="Explain the action taken."></textarea></div><div class="feedback-actions"><button class="ghost-button" data-report-status="dismissed">Dismiss</button><button class="ghost-button" data-report-status="resolved">Resolve</button><button class="primary-button" data-report-suspend> Suspend account </button><button class="danger-button" data-report-ban>Ban account</button></div></article>`).join(''):'<p class="empty-state">No open user reports.</p>';
-      list.querySelectorAll('[data-report-status]').forEach(btn=>btn.onclick=async()=>{const card=btn.closest('[data-report]');const {error}=await supabase.rpc('admin_update_report',{p_report_id:Number(card.dataset.report),p_status:btn.dataset.reportStatus,p_note:card.querySelector('[data-report-note]').value||null});if(error)alert(error.message);else await loadReports();});
+      list.querySelectorAll('[data-report-status]').forEach(btn=>btn.onclick=async()=>{const card=btn.closest('[data-report]');const {error}=await supabase.rpc('admin_update_report',{p_report_id:Number(card.dataset.report),p_status:btn.dataset.reportStatus,p_note:card.querySelector('[data-report-note]').value||null});if(error)showNoticeModal(error.message);else await loadReports();});
       list.querySelectorAll('[data-report-suspend],[data-report-ban]').forEach(btn=>btn.onclick=async()=>{const card=btn.closest('[data-report]');await openAccountStatusModal(card.dataset.reportedUserId,btn.hasAttribute('data-report-ban')?'banned':'suspended',Number(card.dataset.report));});
     };
     const loadTrainerVerifications = async()=>{
@@ -2852,11 +3027,11 @@ const PulsePlateApp = (() => {
       if(error){list.innerHTML=`<p class="page-copy">${esc(error.message)}</p>`;return;}
       const rows=data||[];
       list.innerHTML=rows.length?rows.map(v=>`<article class="admin-flag-item" data-verification-user="${v.user_id}"><div class="feedback-item-head"><strong>${esc(v.display_name||'Unknown')} ${v.status==='approved'?'✓':''}</strong><span>${esc(v.status)}</span></div><div class="feedback-author">${esc(v.email||'Email hidden')}${v.business_name?' · '+esc(v.business_name):''}</div><p>Requested ${formatTimestamp(v.requested_at)}</p><div class="trainer-verification-review"><p><strong>Training experience</strong><br>${esc(v.experience||'Not provided')}</p><p><strong>Credentials</strong><br>${esc(v.credentials||'Not provided')}</p>${v.credential_number?`<p><strong>Credential number</strong><br>${esc(v.credential_number)}</p>`:''}${v.proof_url?`<p><strong>Verification link</strong><br><a href="${esc(v.proof_url)}" target="_blank" rel="noopener noreferrer">${esc(v.proof_url)}</a></p>`:''}${(v.instagram||v.facebook||v.tiktok||v.youtube||v.other_social)?`<p><strong>Social media</strong><br>${[['Instagram',v.instagram],['Facebook',v.facebook],['TikTok',v.tiktok],['YouTube',v.youtube],['Other',v.other_social]].filter(([,value])=>value).map(([label,value])=>`${label}: ${esc(value)}`).join('<br>')}</p>`:''}<p><strong>Resume / professional background</strong><br>${esc(v.professional_background||'Not provided')}</p><p><strong>Applicant statement</strong><br>${esc(v.statement||'Not provided')}</p></div><div class="field"><label>Admin note</label><textarea rows="2" data-verification-note placeholder="Explain the decision or request more evidence."></textarea></div><div class="feedback-actions"><button class="primary-button" data-verification-action="approved">Approve</button><button class="ghost-button" data-verification-action="rejected">Reject</button>${v.status==='approved'?'<button class="danger-button" data-verification-action="revoked">Revoke</button>':''}</div></article>`).join(''):'<p class="empty-state">No trainer verification requests.</p>';
-      list.querySelectorAll('[data-verification-action]').forEach(btn=>btn.onclick=async()=>{const card=btn.closest('[data-verification-user]');const {error}=await supabase.rpc('admin_set_trainer_verification',{p_user_id:card.dataset.verificationUser,p_status:btn.dataset.verificationAction,p_note:card.querySelector('[data-verification-note]').value||null});if(error){alert(error.message);return;}await loadTrainerVerifications();});
+      list.querySelectorAll('[data-verification-action]').forEach(btn=>btn.onclick=async()=>{const card=btn.closest('[data-verification-user]');const {error}=await supabase.rpc('admin_set_trainer_verification',{p_user_id:card.dataset.verificationUser,p_status:btn.dataset.verificationAction,p_note:card.querySelector('[data-verification-note]').value||null});if(error){showNoticeModal(error.message);return;}await loadTrainerVerifications();});
     };
-    const loadFeedback=async()=>{const list=$('[data-admin-feedback]');const {data,error}=await supabase.from('feedback').select('id,user_id,category,message,created_at,read_at').order('created_at',{ascending:false});if(error){list.innerHTML=`<p class="page-copy">${esc(error.message)}</p>`;return;}const rows=data||[];list.innerHTML=rows.length?rows.map(f=>`<article class="admin-flag-item"><div class="feedback-item-head"><strong>${esc(f.category)}</strong><span>${formatTimestamp(f.created_at)}</span></div><p>${esc(f.message)}</p><div class="feedback-actions"><button class="ghost-button" data-feedback-delete="${f.id}">Delete feedback</button></div></article>`).join(''):'<p class="empty-state">No feedback yet.</p>';list.querySelectorAll('[data-feedback-delete]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this feedback?'))return;const {error}=await supabase.from('feedback').delete().eq('id',Number(b.dataset.feedbackDelete));if(error)alert(error.message);else await loadFeedback();});};
+    const loadFeedback=async()=>{const list=$('[data-admin-feedback]');const {data,error}=await supabase.from('feedback').select('id,user_id,category,message,created_at,read_at').order('created_at',{ascending:false});if(error){list.innerHTML=`<p class="page-copy">${esc(error.message)}</p>`;return;}const rows=data||[];list.innerHTML=rows.length?rows.map(f=>`<article class="admin-flag-item"><div class="feedback-item-head"><strong>${esc(f.category)}</strong><span>${formatTimestamp(f.created_at)}</span></div><p>${esc(f.message)}</p><div class="feedback-actions"><button class="ghost-button" data-feedback-delete="${f.id}">Delete feedback</button></div></article>`).join(''):'<p class="empty-state">No feedback yet.</p>';list.querySelectorAll('[data-feedback-delete]').forEach(b=>b.onclick=async()=>{if(!await showConfirmModal({ title: 'Delete feedback?', message: 'This feedback will be permanently deleted.', confirmLabel: 'Delete feedback', danger: true }))return;const {error}=await supabase.from('feedback').delete().eq('id',Number(b.dataset.feedbackDelete));if(error)showNoticeModal(error.message);else await loadFeedback();});};
     async function openAccountStatusModal(targetId, preset=null, reportId=null){
-      const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" type="button" data-close>×</button><p class="eyebrow">Account moderation</p><h2>Suspend or ban account</h2><div class="field"><label>Status</label><select data-status><option value="suspended">Suspended</option><option value="banned">Banned</option><option value="active">Restore active</option></select></div><div class="field"><label>Explanation to user</label><textarea rows="4" data-status-note placeholder="Explain why this action was taken."></textarea></div><div class="field"><label>Suspension end (optional)</label><input type="datetime-local" data-status-until></div><div class="modal-actions"><button class="ghost-button" data-close>Cancel</button><button class="primary-button" data-apply-status>Apply</button></div></section>`;document.body.appendChild(overlay);overlay.querySelector('[data-status]').value=preset||'suspended';overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());overlay.querySelector('[data-apply-status]').onclick=async()=>{const statusValue=overlay.querySelector('[data-status]').value;const note=overlay.querySelector('[data-status-note]').value||null;const until=overlay.querySelector('[data-status-until]').value?new Date(overlay.querySelector('[data-status-until]').value).toISOString():null;const {error}=await supabase.rpc('admin_set_account_status',{p_user_id:targetId,p_status:statusValue,p_note:note,p_until:until});if(error){alert(error.message);return;}if(reportId)await supabase.rpc('admin_update_report',{p_report_id:reportId,p_status:'resolved',p_note:note});overlay.remove();await Promise.all([loadFlags(),loadReports(),loadTrainerVerifications()]);};
+      const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" type="button" data-close>×</button><p class="eyebrow">Account moderation</p><h2>Suspend or ban account</h2><div class="field"><label>Status</label><select data-status><option value="suspended">Suspended</option><option value="banned">Banned</option><option value="active">Restore active</option></select></div><div class="field"><label>Explanation to user</label><textarea rows="4" data-status-note placeholder="Explain why this action was taken."></textarea></div><div class="field"><label>Suspension end (optional)</label><input type="datetime-local" data-status-until></div><div class="modal-actions"><button class="ghost-button" data-close>Cancel</button><button class="primary-button" data-apply-status>Apply</button></div></section>`;document.body.appendChild(overlay);overlay.querySelector('[data-status]').value=preset||'suspended';overlay.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>overlay.remove());overlay.querySelector('[data-apply-status]').onclick=async()=>{const statusValue=overlay.querySelector('[data-status]').value;const note=overlay.querySelector('[data-status-note]').value||null;const until=overlay.querySelector('[data-status-until]').value?new Date(overlay.querySelector('[data-status-until]').value).toISOString():null;const {error}=await supabase.rpc('admin_set_account_status',{p_user_id:targetId,p_status:statusValue,p_note:note,p_until:until});if(error){showNoticeModal(error.message);return;}if(reportId)await supabase.rpc('admin_update_report',{p_report_id:reportId,p_status:'resolved',p_note:note});overlay.remove();await Promise.all([loadFlags(),loadReports(),loadTrainerVerifications()]);};
     }
     const loadAnalytics=async()=>{const list=$('[data-admin-analytics]'); if(!list)return; const {data,error}=await supabase.from('app_events').select('event_name,created_at').order('created_at',{ascending:false}).limit(5000); if(error){list.innerHTML=`<p class="page-copy">${esc(error.message)}</p>`;return;} const rows=data||[]; const counts=new Map(); rows.forEach(e=>counts.set(e.event_name,(counts.get(e.event_name)||0)+1)); const ordered=[...counts.entries()].sort((a,b)=>b[1]-a[1]); list.innerHTML=ordered.length?`<div class="analytics-summary-grid">${ordered.slice(0,12).map(([name,count])=>`<article class="panel analytics-summary-card"><strong>${esc(name)}</strong><span>${count.toLocaleString()} events</span></article>`).join('')}</div><p class="page-copy">Showing the most recent ${rows.length.toLocaleString()} recorded events.</p>`:'<p class="empty-state">No analytics events have been recorded yet.</p>';};
     const loadErrors=async()=>{const list=$('[data-admin-errors]'); if(!list)return; const {data,error}=await supabase.from('app_error_events').select('id,user_id,page_path,message,stack,context,created_at').order('created_at',{ascending:false}).limit(100); if(error){list.innerHTML=`<p class="page-copy">${esc(error.message)}</p>`;return;} const rows=data||[]; list.innerHTML=rows.length?rows.map(e=>`<article class="admin-flag-item"><div class="feedback-item-head"><strong>${esc(e.page_path||'Unknown page')}</strong><span>${formatTimestamp(e.created_at)}</span></div><p>${esc(e.message)}</p><div class="admin-content-preview"><strong>Version:</strong> ${esc(e.context?.app_version||'Unknown')}<br><strong>Source:</strong> ${esc(e.context?.source||'Runtime')}<br><strong>Stack:</strong><pre class="error-stack">${esc(e.stack||'No stack captured')}</pre></div></article>`).join(''):'<p class="empty-state">No client errors have been reported.</p>';};
@@ -3059,9 +3234,9 @@ const PulsePlateApp = (() => {
   }
 
   async function openNutritionShareModal() {
-    if (!selectedFriendId) { alert('Select a friend first.'); return; }
+    if (!selectedFriendId) { showNoticeModal('Select a friend first.'); return; }
     const friend=personById(selectedFriendId);
-    if (!friend) { alert('Select an accepted friend first.'); return; }
+    if (!friend) { showNoticeModal('Select an accepted friend first.'); return; }
     const overlay=document.createElement('div'); overlay.className='modal-overlay';
     overlay.innerHTML=`<section class="modal-card nutrition-share-modal" role="dialog" aria-modal="true" aria-labelledby="nutritionShareTitle"><button class="modal-close" data-close-share type="button">×</button><p class="eyebrow">Share nutrition</p><h2 id="nutritionShareTitle">Send something to ${escapeHtml(friend.display_name)}</h2><p class="page-copy">This sends a suggestion. ${escapeHtml(friend.display_name)} must accept it before they can choose to add or save it.</p><div class="field"><label for="nutritionShareType">What are you sending?</label><select id="nutritionShareType" data-nutrition-share-type><option value="food">Food</option><option value="meal">Saved meal</option><option value="recipe">Recipe</option><option value="day_plan">Day plan</option></select></div><div class="field"><label for="nutritionShareChoice">Choose an item</label><select id="nutritionShareChoice" data-nutrition-share-choice><option value="">Loading…</option></select></div><div class="field"><label for="nutritionShareNote">Optional note</label><textarea id="nutritionShareNote" data-nutrition-share-note rows="3" placeholder="Add a note about why you are sharing this."></textarea></div><div class="modal-actions"><button class="ghost-button" data-close-share type="button">Cancel</button><button class="primary-button" data-send-nutrition-share type="button">Send</button></div></section>`;
     document.body.appendChild(overlay);
@@ -3069,7 +3244,7 @@ const PulsePlateApp = (() => {
     const populate=async()=>{choiceSelect.innerHTML='<option value="">Loading…</option>';try{const choices=await loadNutritionShareChoices(typeSelect.value);choiceSelect.innerHTML=choices.length?choices.map((x,i)=>`<option value="${i}">${escapeHtml(x.title)}</option>`).join(''):'<option value="">No items available</option>';choiceSelect._choices=choices;}catch(e){choiceSelect.innerHTML=`<option value="">${escapeHtml(e.message||'Could not load items.')}</option>`;}};
     overlay.querySelectorAll('[data-close-share]').forEach(b=>b.onclick=()=>overlay.remove());
     typeSelect.onchange=populate; await populate();
-    overlay.querySelector('[data-send-nutrition-share]').onclick=async()=>{const choices=choiceSelect._choices||[];const choice=choices[Number(choiceSelect.value)];if(!choice){alert('Choose an item first.');return;}const note=overlay.querySelector('[data-nutrition-share-note]').value.trim()||null;const {error}=await supabase.rpc('create_nutrition_share',{p_recipient_id:selectedFriendId,p_item_type:typeSelect.value,p_title:choice.title,p_note:note,p_snapshot:choice.snapshot,p_source_id:choice.id,p_attach_to_message:true});if(error){alert(error.message);return;}overlay.remove();await renderMessages();await renderNutritionShares();};
+    overlay.querySelector('[data-send-nutrition-share]').onclick=async()=>{const choices=choiceSelect._choices||[];const choice=choices[Number(choiceSelect.value)];if(!choice){showNoticeModal('Choose an item first.');return;}const note=overlay.querySelector('[data-nutrition-share-note]').value.trim()||null;const {error}=await supabase.rpc('create_nutrition_share',{p_recipient_id:selectedFriendId,p_item_type:typeSelect.value,p_title:choice.title,p_note:note,p_snapshot:choice.snapshot,p_source_id:choice.id,p_attach_to_message:true});if(error){showNoticeModal(error.message);return;}overlay.remove();await renderMessages();await renderNutritionShares();};
   }
 
   function nutritionShareCard(share, senderName, inThread=false) {
@@ -3103,16 +3278,16 @@ const PulsePlateApp = (() => {
   }
 
   function bindNutritionShareActions(scope=document) {
-    scope.querySelectorAll('[data-accept-nutrition-share]').forEach(b=>b.onclick=async()=>{const {error}=await supabase.rpc('accept_nutrition_share',{p_share_id:Number(b.dataset.acceptNutritionShare)});if(error){alert(error.message);return;}await renderNutritionShares();await renderMessages();});
-    scope.querySelectorAll('[data-decline-nutrition-share]').forEach(b=>b.onclick=async()=>{const {error}=await supabase.rpc('decline_nutrition_share',{p_share_id:Number(b.dataset.declineNutritionShare)});if(error){alert(error.message);return;}await renderNutritionShares();await renderMessages();});
+    scope.querySelectorAll('[data-accept-nutrition-share]').forEach(b=>b.onclick=async()=>{const {error}=await supabase.rpc('accept_nutrition_share',{p_share_id:Number(b.dataset.acceptNutritionShare)});if(error){showNoticeModal(error.message);return;}await renderNutritionShares();await renderMessages();});
+    scope.querySelectorAll('[data-decline-nutrition-share]').forEach(b=>b.onclick=async()=>{const {error}=await supabase.rpc('decline_nutrition_share',{p_share_id:Number(b.dataset.declineNutritionShare)});if(error){showNoticeModal(error.message);return;}await renderNutritionShares();await renderMessages();});
     scope.querySelectorAll('[data-use-nutrition-share]').forEach(b=>b.onclick=()=>openNutritionUseModal(Number(b.dataset.useNutritionShare)));
   }
 
   async function openNutritionUseModal(shareId) {
-    const {data,error}=await supabase.from('nutrition_shares').select('*').eq('id',shareId).eq('recipient_id',user.id).single(); if(error){alert(error.message);return;}
-    if(data.status!=='accepted'){alert('Accept this item before using it.');return;}
+    const {data,error}=await supabase.from('nutrition_shares').select('*').eq('id',shareId).eq('recipient_id',user.id).single(); if(error){showNoticeModal(error.message);return;}
+    if(data.status!=='accepted'){showNoticeModal('Accept this item before using it.');return;}
     const options=data.item_type==='recipe'?'<option value="save_recipe">Save to my recipes</option><option value="log_recipe">Add recipe to today</option>':data.item_type==='meal'?'<option value="save_meal">Save as a meal</option><option value="log_meal">Add meal to today</option>':data.item_type==='day_plan'?'<option value="log_day">Add day plan to today</option>':'<option value="log_food">Add food to today</option>';
-    const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close-use type="button">×</button><p class="eyebrow">Use shared nutrition</p><h2>${escapeHtml(data.title)}</h2><p class="page-copy">Choose what you want MacroSync to do. Accepting the share never changes your log by itself.</p><div class="field"><label>Action</label><select data-use-action>${options}</select></div><div class="modal-actions"><button class="ghost-button" data-close-use type="button">Cancel</button><button class="primary-button" data-confirm-use type="button">Continue</button></div></section>`;document.body.appendChild(overlay);overlay.querySelectorAll('[data-close-use]').forEach(b=>b.onclick=()=>overlay.remove());overlay.querySelector('[data-confirm-use]').onclick=async()=>{try{await applyNutritionShare(data,overlay.querySelector('[data-use-action]').value);overlay.remove();await renderNutritionShares();await renderMessages();if(document.body.dataset.page==='log')await renderPage();}catch(e){alert(e.message||String(e));}};
+    const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.innerHTML=`<section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-close-use type="button">×</button><p class="eyebrow">Use shared nutrition</p><h2>${escapeHtml(data.title)}</h2><p class="page-copy">Choose what you want MacroSync to do. Accepting the share never changes your log by itself.</p><div class="field"><label>Action</label><select data-use-action>${options}</select></div><div class="modal-actions"><button class="ghost-button" data-close-use type="button">Cancel</button><button class="primary-button" data-confirm-use type="button">Continue</button></div></section>`;document.body.appendChild(overlay);overlay.querySelectorAll('[data-close-use]').forEach(b=>b.onclick=()=>overlay.remove());overlay.querySelector('[data-confirm-use]').onclick=async()=>{try{await applyNutritionShare(data,overlay.querySelector('[data-use-action]').value);overlay.remove();await renderNutritionShares();await renderMessages();if(document.body.dataset.page==='log')await renderPage();}catch(e){showNoticeModal(e.message||String(e));}};
   }
 
   async function applyNutritionShare(share, action) {
@@ -3211,19 +3386,19 @@ const PulsePlateApp = (() => {
   async function wireSocialButtons(profile) {
     document.querySelectorAll('[data-add-person]').forEach(btn => btn.onclick = async () => {
       const { error } = await supabase.rpc('send_friend_request', { p_addressee_id: btn.dataset.addPerson });
-      if (error) { alert(error.message); return; }
+      if (error) { showNoticeModal(error.message); return; }
       await renderSocial();
     });
 
     document.querySelectorAll('[data-accept-request]').forEach(btn => btn.onclick = async () => {
       const { error } = await supabase.rpc('accept_friend_request', { p_connection_id: Number(btn.dataset.acceptRequest) });
-      if (error) { alert(error.message); return; }
+      if (error) { showNoticeModal(error.message); return; }
       await renderSocial();
     });
 
     document.querySelectorAll('[data-reject-request]').forEach(btn => btn.onclick = async () => {
       const { error } = await supabase.rpc('reject_friend_request', { p_connection_id: Number(btn.dataset.rejectRequest) });
-      if (error) { alert(error.message); return; }
+      if (error) { showNoticeModal(error.message); return; }
       await renderSocial();
     });
 
@@ -3301,28 +3476,28 @@ const PulsePlateApp = (() => {
         const reason = prompt('Why are you reporting this message?');
         if (!reason?.trim()) return;
         const { error } = await supabase.rpc('report_message', { p_message_id: Number(button.dataset.reportMessage), p_reason: reason.trim() });
-        if (error) alert(error.message); else { alert('Report submitted to MacroSync administrators.'); button.disabled = true; button.textContent = 'Reported'; }
+        if (error) showNoticeModal(error.message); else { showNoticeModal('Report submitted to MacroSync administrators.'); button.disabled = true; button.textContent = 'Reported'; }
       };
     });
     thread.querySelectorAll('[data-delete-message]').forEach(button => {
       button.onclick = async () => {
-        if (!confirm('Delete this message permanently?')) return;
+        if (!await showConfirmModal({ title: 'Delete message?', message: 'This message will be permanently deleted. This cannot be undone.', confirmLabel: 'Delete message', danger: true })) return;
         const { data: deleted, error: deleteError } = await supabase.rpc('delete_message', { p_message_id: Number(button.dataset.deleteMessage) });
-        if (deleteError) { alert(deleteError.message); return; }
-        if (!deleted) { alert('The message could not be deleted. It may already be gone or you may not own it.'); return; }
+        if (deleteError) { showNoticeModal(deleteError.message); return; }
+        if (!deleted) { showNoticeModal('The message could not be deleted. It may already be gone or you may not own it.'); return; }
         await renderMessages();
       };
     });
   }
 
   async function sendMessage() {
-    if (!selectedFriendId) { alert('Select a friend first.'); return; }
+    if (!selectedFriendId) { showNoticeModal('Select a friend first.'); return; }
     const input = $('[data-message-text]'); const body = input?.value.trim();
     const { data: ageProfile } = await supabase.from('profiles').select('date_of_birth').eq('id', user.id).single();
     const isMinor = ageProfile?.date_of_birth ? ageInYears(ageProfile.date_of_birth) < 18 : true;
-    const validation = validateMessageText(body, isMinor); if (validation) { alert(validation); return; }
+    const validation = validateMessageText(body, isMinor); if (validation) { showNoticeModal(validation); return; }
     const { error } = await supabase.rpc('send_message', { p_recipient_id: selectedFriendId, p_body: body });
-    if (error) { alert(error.message); return; }
+    if (error) { showNoticeModal(error.message); return; }
     input.value = '';
     await renderMessages();
   }
@@ -3371,10 +3546,10 @@ const PulsePlateApp = (() => {
     const connection = connectionFor(targetId);
     if (!connection) return;
     const { data: currentProfile, error: profileError } = await supabase.from('profiles').select('role').eq('id', user.id).single();
-    if (profileError) { alert(profileError.message); event.target.checked = !event.target.checked; return; }
+    if (profileError) { showNoticeModal(profileError.message); event.target.checked = !event.target.checked; return; }
     const { error } = await supabase.rpc('set_meal_sharing', { connection_id: connection.id, enabled: event.target.checked });
     if (error) {
-      alert(error.message);
+      showNoticeModal(error.message);
       event.target.checked = !event.target.checked;
       return;
     }

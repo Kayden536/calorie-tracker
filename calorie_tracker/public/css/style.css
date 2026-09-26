@@ -2078,13 +2078,24 @@ body {
 }
 
 /* Signup legal agreements */
-.signup-agreements { display:grid; gap:.7rem; margin-top:.35rem; padding:1rem; border:1px solid var(--line); border-radius:1rem; background:var(--surface-2); }
+.signup-agreements { display:grid; gap:.7rem; margin-top:.35rem; padding:1rem; border:1px solid var(--line); border-radius:1rem; background:var(--surface-2); min-width:0; max-width:100%; overflow:visible; }
 .signup-agreements h2 { margin:0; font-size:1rem; }
-.agreement-row { display:flex; align-items:flex-start; gap:.65rem; line-height:1.45; font-size:.88rem; }
-.agreement-row input { width:auto; min-height:auto; margin-top:.2rem; flex:0 0 auto; }
+.agreement-row { display:grid; grid-template-columns:18px minmax(0,1fr); align-items:start; column-gap:.65rem; line-height:1.45; font-size:.88rem; min-width:0; width:100%; max-width:100%; box-sizing:border-box; }
+.agreement-row span { display:block; min-width:0; width:auto; max-width:none; overflow-wrap:anywhere; word-break:break-word; color:var(--ink); }
+.agreement-row input { width:18px !important; height:18px; min-width:18px; min-height:18px !important; margin:.2rem 0 0; padding:0; box-sizing:border-box; flex:none; }
 .agreement-row a { color:inherit; font-weight:800; text-decoration:underline; }
 .agreement-note { margin:0; color:var(--muted); font-size:.78rem; line-height:1.5; }
 .auth-card button:disabled { opacity:.5; cursor:not-allowed; }
+.auth-card form > * { min-width:0; max-width:100%; }
+.auth-card .page-copy { overflow-wrap:anywhere; }
+@media (max-width:560px) { /* Auth mode visibility: hidden fields must stay hidden even though .field has a display rule. */
+.auth-card .field[hidden],
+.auth-card section[hidden],
+.auth-card label[hidden] {
+  display: none !important;
+}
+
+.auth-shell { width:100%; padding:.75rem; overflow-x:hidden; } .auth-card { width:100%; max-width:100%; padding:1rem; overflow:visible; } .auth-logo img { max-width:100%; } }
 
 /* MacroSync branding */
 .brand {
@@ -2349,3 +2360,13 @@ body.light-theme .cross-source-card,body.light-theme .cross-reference-summary,bo
 .app-toast.success{border-color:rgba(90,210,140,.45)}
 .app-toast.error{border-color:rgba(240,100,100,.5)}
 @media(max-width:700px){.app-toast{right:1rem;bottom:calc(4.8rem + env(safe-area-inset-bottom));}}
+
+/* v0.60.6.9 polish: bulk food controls, saved-meal editor, and confirmations */
+.bulk-food-toolbar{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin:0 0 1rem;padding:.85rem 1rem;border:1px solid var(--line);border-radius:14px;background:var(--surface-2);box-shadow:0 6px 20px rgba(0,0,0,.08)}
+.bulk-food-toolbar>div:first-child{display:grid;gap:.2rem;min-width:0}.bulk-food-toolbar strong{font-size:.9rem}.bulk-food-toolbar span{font-size:.78rem;color:var(--muted);line-height:1.4}.bulk-food-actions{display:flex;align-items:center;justify-content:flex-end;gap:.4rem;flex-wrap:wrap}.bulk-food-actions button{white-space:nowrap}.bulk-food-actions .danger-button{font-weight:800}
+.meal-item-select,.saved-meal-item-select{display:flex;align-items:flex-start;padding-top:.2rem}.meal-item-select input,.saved-meal-item-select input{width:18px;height:18px;min-width:18px;margin:0;accent-color:var(--accent,var(--blue));cursor:pointer}.meal-item{display:grid;grid-template-columns:18px minmax(0,1fr) auto auto;align-items:start;gap:.75rem}.meal-item-main{min-width:0}.meal-item-actions{grid-column:2/-1}.saved-meal-edit-header{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;padding-bottom:.8rem;border-bottom:1px solid var(--line)}.saved-meal-edit-item-info{min-width:0;flex:1}.saved-meal-edit-item-info strong{display:block;overflow-wrap:anywhere}.saved-meal-edit-item{align-items:flex-start}.saved-meal-edit-modal{width:min(760px,100%)}.saved-meal-save-modal{width:min(560px,100%)}
+.confirm-modal{width:min(500px,100%)}.confirm-message{margin-top:.4rem;line-height:1.55}.confirm-modal .danger-button{font-weight:850}
+.app-toast{pointer-events:none;animation:macrosync-toast-in .18s ease-out}.app-toast.error{border-color:rgba(255,90,90,.42)}.app-toast.success{border-color:rgba(70,210,150,.3)}
+@keyframes macrosync-toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@media(max-width:760px){.bulk-food-toolbar{align-items:stretch;flex-direction:column}.bulk-food-actions{justify-content:flex-start}.bulk-food-actions button{flex:1 1 auto}.meal-item{grid-template-columns:18px minmax(0,1fr)}.meal-item-nutrition{grid-column:2}.meal-item-actions{grid-column:2}.saved-meal-edit-header{flex-direction:column}.saved-meal-edit-header .bulk-food-actions{width:100%}.saved-meal-edit-header .bulk-food-actions button{flex:1}.saved-meal-edit-item{display:grid;grid-template-columns:18px minmax(0,1fr);gap:.7rem}.saved-meal-edit-item>.danger-button{grid-column:2;justify-self:start}.confirm-modal .modal-actions{flex-direction:column-reverse}.confirm-modal .modal-actions button{width:100%}}
+.notice-modal{width:min(500px,100%)}.notice-message{margin-top:.4rem;line-height:1.55}.notice-overlay .modal-actions{margin-top:1rem}.confirm-overlay .danger-button,.notice-overlay .danger-button{font-weight:850}

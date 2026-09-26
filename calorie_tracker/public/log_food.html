@@ -34,7 +34,8 @@
             <div class="panel-header"><div><p class="eyebrow">Food logging</p><h2>Add food</h2></div></div>
             <div class="form-grid logging-controls">
               <div class="field"><label for="loggingMeal">Add foods to</label><select id="loggingMeal" data-logging-meal></select><p class="field-help">Choose the meal once. Every food you add in this session will go to this meal.</p></div>
-              <div class="field"><label>Planning ahead</label><label class="toggle-row compact-toggle"><input type="checkbox" data-plan-ahead><span><strong>Allow future dates</strong><small>When enabled, you can add foods up to 2 days ahead.</small></span></label></div>
+              <div class="field"><label>Planning ahead</label><label class="toggle-row compact-toggle"><input type="checkbox" data-plan-ahead><span><strong>Allow future dates</strong><small>Choose the destination before you start adding foods.</small></span></label></div>
+              <div class="field"><label for="quickAddMode">Quick add</label><select id="quickAddMode" data-quick-add-mode><option value="selected">Selected date</option><option value="day1">1 day ahead</option><option value="day2">2 days ahead</option><option value="both">Both 1 and 2 days ahead</option></select><p class="field-help">Set this once before adding food. Every food, recent food, and saved meal you add will use this destination.</p></div>
             </div>
                         <div class="panel-divider"></div>
             <div class="panel-header compact"><div><p class="eyebrow">Quick logging</p><h2>Saved Meals</h2></div><a class="ghost-button" href="recipes.html">Recipes</a></div>

@@ -32,6 +32,27 @@
   let supabase;
   let mode = 'login';
 
+  function showStatus(message, type = 'working') {
+    if (!status) return;
+    status.textContent = message || '';
+    status.classList.remove('is-working', 'is-success', 'is-error');
+    if (message) status.classList.add(`is-${type}`);
+  }
+
+  function setWorking(isWorking, label = 'Working…') {
+    if (!submit) return;
+    submit.disabled = isWorking;
+    submit.classList.toggle('auth-submit-working', isWorking);
+    if (isWorking) submit.textContent = label;
+  }
+
+  function validateEmail(value) {
+    const address = String(value || '').trim();
+    if (!address) throw new Error('Enter your email address.');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) throw new Error('Enter a valid email address.');
+    return address;
+  }
+
   function setupDatePicker() {
     if (!dobYear || !dobMonth || !dobDay || !dateOfBirth) return;
     const today = new Date();
@@ -115,6 +136,21 @@
     submit.disabled = !(agreementsOk && dobOk);
   }
 
+  function getAuthRedirectUrl() {
+    // Always return to the actual auth page, regardless of whether the app is
+    // running from /, /public/, or another deployment path.
+    return new URL('auth.html', window.location.href).href;
+  }
+
+  function getAuthUrlError() {
+    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const query = new URLSearchParams(window.location.search);
+    const errorDescription = hash.get('error_description') || query.get('error_description');
+    const errorCode = hash.get('error_code') || query.get('error_code');
+    if (!errorDescription && !errorCode) return null;
+    return errorDescription || `Authentication request failed${errorCode ? ` (${errorCode})` : ''}.`;
+  }
+
   function isRecoveryLink() {
     const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
     const query = new URLSearchParams(window.location.search);
@@ -124,13 +160,17 @@
   try {
     supabase = await window.PulsePlate.ready;
   } catch (error) {
-    status.textContent = error.message;
+    showStatus(error.message || 'MacroSync could not connect to authentication.', 'error');
     return;
   }
 
   setupDatePicker();
 
   const recovery = isRecoveryLink();
+  const authUrlError = getAuthUrlError();
+  if (authUrlError) {
+    showStatus(authUrlError, 'error');
+  }
 
   const { data: { session } } = await supabase.auth.getSession();
   if (session && !recovery) {
@@ -170,7 +210,7 @@
       submit.textContent = signup ? 'Create account' : 'Log in';
       backToLogin.hidden = true;
     }
-    status.textContent = '';
+    showStatus('');
     updateSignupRequirements();
   }
 
@@ -222,20 +262,24 @@
   [termsAgreement, privacyAgreement, parentAgreement].forEach(el => el?.addEventListener('change', updateSubmitState));
   updateSignupRequirements();
 
+  submit?.addEventListener('click', () => {
+    if (mode === 'login') showStatus('Starting login…', 'working');
+    else if (mode === 'forgot') showStatus('Starting password reset request…', 'working');
+  });
+
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    status.textContent = 'Working…';
+    showStatus('Working…', 'working');
 
     try {
       password.required = mode !== 'forgot';
     confirmPassword.required = mode === 'reset';
     if (mode === 'forgot') {
-        const address = email.value.trim();
-        if (!address) throw new Error('Enter your email address first.');
-        const redirectTo = `${window.location.origin}${window.location.pathname}`;
+        const address = validateEmail(email.value);
+        const redirectTo = getAuthRedirectUrl();
         const result = await supabase.auth.resetPasswordForEmail(address, { redirectTo });
         if (result.error) throw result.error;
-        status.textContent = 'If an account exists for that email, a password reset link has been sent.';
+        showStatus('Reset request sent. If an account exists for that email, check your inbox and spam/junk folder for the reset link.', 'success');
         return;
       }
 
@@ -244,13 +288,13 @@
         if (password.value !== confirmPassword.value) throw new Error('The passwords do not match.');
         const result = await supabase.auth.updateUser({ password: password.value });
         if (result.error) throw result.error;
-        status.textContent = 'Password updated successfully. Redirecting…';
+        showStatus('Password updated successfully. Redirecting…', 'success');
         window.history.replaceState({}, '', 'auth.html');
         setTimeout(() => { window.location.href = 'index.html'; }, 700);
         return;
       }
 
-      const address = email.value.trim();
+      const address = validateEmail(email.value);
       const pass = password.value;
       const name = displayName.value.trim() || 'MacroSync User';
       const dob = dateOfBirth?.value || '';
@@ -304,13 +348,33 @@
           window.location.href = 'index.html';
         }
       } else {
+        if (!address) throw new Error('Enter your email address.');
+        if (!pass) throw new Error('Enter your password.');
+        setWorking(true, 'Logging in…');
+        showStatus('Checking your login details…', 'working');
         result = await supabase.auth.signInWithPassword({ email: address, password: pass });
-        if (!result.error) window.location.href = 'index.html';
+        if (result.error) throw result.error;
+
+        // Confirm that the session was actually established before navigating away.
+        // This prevents a successful auth response from appearing to do nothing if
+        // session persistence or the redirect races the page transition.
+        const sessionResult = await supabase.auth.getSession();
+        if (sessionResult.error) throw sessionResult.error;
+        if (!sessionResult.data?.session) throw new Error('Login succeeded, but MacroSync could not establish your session. Please try again.');
+
+        showStatus('Login successful. Loading MacroSync…', 'success');
+        window.location.replace('index.html');
+        return;
       }
 
       if (result.error) throw result.error;
     } catch (error) {
-      status.textContent = error?.message || 'Something went wrong. Please try again.';
+      showStatus(error?.message || 'Something went wrong. Please try again.', 'error');
+      if (submit) {
+        submit.disabled = false;
+        submit.classList.remove('auth-submit-working');
+        submit.textContent = mode === 'forgot' ? 'Send reset email' : mode === 'reset' ? 'Update password' : mode === 'signup' ? 'Create account' : 'Log in';
+      }
     }
   });
 })();
